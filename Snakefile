@@ -1,0 +1,43 @@
+rule all:
+    shell:
+        """
+        echo "No all rule made"
+        """
+
+configfile: "workflows/config.yml"
+
+import itertools
+
+DARK_CURRENT = (list(config['calibration']['dark_current']) +
+                list(config['pilot']['dark_current']) +
+                list(config['operational']['dark_current']))
+
+CALIB_SCANS = list(
+    itertools.chain(*config['calibration'].values())
+)
+
+PILOT_SCANS = list(
+    itertools.chain(*config['pilot'].values())
+)
+
+OPERATIONAL_SCANS = list(
+    itertools.chain(*config['operational'].values())
+)
+
+
+def protect_fields(str, exclude=(), **kwargs):
+    class SafeDict(dict):
+        def __missing__(self, key):
+            if key in exclude:
+                return '{' + key + '}'
+            else:
+                return '{{' + key + '}}'
+
+    replacements = SafeDict(**kwargs)
+    return str.format_map(replacements)
+
+
+import matplotlib
+
+matplotlib.use('agg')
+include: "workflows/dark_current_.smk"
