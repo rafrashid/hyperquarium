@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-scan_records = pd.read_csv('data/interim/all_scans.csv')
+scan_records = pd.read_csv(SCAN_RECORDS_PATH)
 
 rule calc_dark_current:
     input:
@@ -174,7 +174,9 @@ rule plot_compare_dark_current:
                 color=next(color),
                 linewidth=1,
                 linestyle=next(linestyle),
-                label=f'{scan_ID} ({exposure} ms')
+                marker='o',
+                markersize=1.5,
+                label=f'{scan_ID} ({exposure} ms)')
 
         ax.set_xlabel('Band Number',fontsize=12,fontweight='bold')
         ax.set_ylabel('Digital Number (DN)',fontsize=12,fontweight='bold')

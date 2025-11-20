@@ -1,3 +1,5 @@
+scan_records_path: 'data/interim/all_scans.csv'
+
 calibration:
   dark_current:
     - 20240703-105310

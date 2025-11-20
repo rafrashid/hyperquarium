@@ -6,6 +6,8 @@ rule all:
 
 configfile: "workflows/config.yml"
 
+SCAN_RECORDS_PATH = config['scan_records_path']
+
 import itertools
 
 DARK_CURRENT = (list(config['calibration']['dark_current']) +
@@ -41,3 +43,4 @@ import matplotlib
 
 matplotlib.use('agg')
 include: "workflows/dark_current_.smk"
+include: "workflows/annotations_.smk"
