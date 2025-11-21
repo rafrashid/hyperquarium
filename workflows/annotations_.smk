@@ -167,10 +167,7 @@ rule plot_rois_spectra_DN_all:
             ax.plot(band_coords,df.loc[f'{roi_ID}'],
                 color=next(color),
                 linewidth=1,
-                linestyle=next(linestyle),
-                marker='o',
-                markersize=1.5,
-                label=f'{roi_ID}')
+                linestyle=next(linestyle))
 
         ax.set_xlabel('Band Number',fontsize=12,fontweight='bold')
         ax.set_ylabel('Digital Number (DN)',fontsize=12,fontweight='bold')
