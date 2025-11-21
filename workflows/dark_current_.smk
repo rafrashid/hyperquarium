@@ -2,51 +2,27 @@ import gc
 import math
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
+
+from src.hyperquarium.data import my_utils
 
 scan_records = pd.read_csv(SCAN_RECORDS_PATH)
 
 rule calc_dark_current:
     input:
-        bin_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.bin')",
-        hdr_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.hdr')"
-
+        bin_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.bin",
+        hdr_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.hdr"
     output:
         nc_file="data/interim/scans/{scan_ID}/dark_current/{scan_ID}_dark.nc"
-
     run:
-        data = np.fromfile(input.bin_file,dtype=np.int16).reshape(-1,272,640)
-        dims = ["line", "band", "sample"]
-
-        lines, bands, samples = data.shape
-        lines = np.arange(lines)
-        bands = np.arange(bands)
-        samples = np.arange(samples)
-
         scan_ID = wildcards.scan_ID
-
-        data_array = xr.DataArray(data,
-            coords={"line": lines,
-                    "band": bands,
-                    "sample": samples},
-            dims=dims,
-            name=wildcards.scan_ID
+        exposure, dataset_name = my_utils.get_from_records(scan_records,'Scan ID',scan_ID,
+            'Exposure (ms)','Dataset'
         )
-        del data
-
-        exposure = scan_records.loc[scan_records['Scan ID'] == f'{scan_ID}', 'Exposure (ms)'].values[0]
         exposure = math.ceil(exposure)
 
-        dataset_name = scan_records.loc[scan_records['Scan ID'] == f'{scan_ID}', 'Dataset'].values[0]
-
-        # Chunk the DataArray
-        data_array = data_array.chunk({
-            "line": 1000,
-            "band": 272,
-            "sample": 640}
-        )
+        data_array = my_utils.load_cube(bin_file=input.bin_file,scan_ID=scan_ID)
         dark = data_array.mean(dim='line',skipna=True)  # Take the mean DN across lines
         dark.attrs.update(
             dataset=f'{dataset_name}',
@@ -67,7 +43,6 @@ rule plot_dark_current:
         dpi=300
     output:
         jpg_file="data/interim/scans/{scan_ID}/dark_current/{scan_ID}_dark.jpg"
-
     run:
         import matplotlib
 
@@ -164,11 +139,10 @@ rule plot_compare_dark_current:
         linestyle = cycle(["solid", "dotted", "dashed", "dashdot"])
 
         fig, ax = plt.subplots(figsize=params.figsize)
-        for i, scan_ID in enumerate(list(df.index)):
-            exposure = scan_records.loc[scan_records['Scan ID'] == f'{scan_ID}', 'Exposure (ms)'].values[0]
+        for scan_ID in list(df.index):
+            exposure, = my_utils.get_from_records(scan_records,'Scan ID',f'{scan_ID}',
+                'Exposure (ms)')
             exposure = math.ceil(exposure)
-
-            dataset_name = scan_records.loc[scan_records['Scan ID'] == f'{scan_ID}', 'Dataset'].values[0]
 
             ax.plot(band_coords,df.loc[f'{scan_ID}'],
                 color=next(color),

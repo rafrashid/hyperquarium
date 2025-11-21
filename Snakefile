@@ -10,9 +10,7 @@ SCAN_RECORDS_PATH = config['scan_records_path']
 
 import itertools
 
-DARK_CURRENT = (list(config['calibration']['dark_current']) +
-                list(config['pilot']['dark_current']) +
-                list(config['operational']['dark_current']))
+DARK_CURRENT = list(config['dark_current'])
 
 CALIB_SCANS = list(
     itertools.chain(*config['calibration'].values())
@@ -26,6 +24,7 @@ OPERATIONAL_SCANS = list(
     itertools.chain(*config['operational'].values())
 )
 
+ALL_SCANS = CALIB_SCANS + PILOT_SCANS  #+OPERATIONAL_SCANS
 
 def protect_fields(str, exclude=(), **kwargs):
     class SafeDict(dict):
