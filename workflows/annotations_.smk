@@ -10,15 +10,15 @@ from src.hyperquarium.data import my_utils, annotate
 
 scan_records = pd.read_csv(SCAN_RECORDS_PATH)
 
-#ALL_SCANS = ['20240725-145042']
+#ALL_SCANS = ['20250922-085309']
 
-rule extract_cubes_from_rois:
+rule extract_raw_cubes_from_rois:
     input:
         bin_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.bin",
         hdr_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.hdr",
         annotations_file="data/interim/scans/{scan_ID}/{scan_ID}_raw_0.json"
     output:
-        csv_file="data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs.csv"
+        csv_file="data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs.csv"
     run:
         scan_ID = wildcards.scan_ID
         exposure, dataset_name = my_utils.get_from_records(scan_records,'Scan ID',scan_ID,
@@ -27,10 +27,11 @@ rule extract_cubes_from_rois:
         exposure = math.ceil(exposure)
 
         data_array = my_utils.load_cube(bin_file=input.bin_file,scan_ID=scan_ID)
-
         polygons, roi_names, labels = annotate.get_roi_polygon_labels(input.annotations_file,scan_ID=scan_ID)
 
-        polygon_arrays = annotate.extract_polygon_arrays(data_array,polygons,polygon_names=roi_names,band_chunks=30)
+        band_chunks = 30
+        fill_value = -9999
+        polygon_arrays = annotate.extract_polygon_arrays(data_array,polygons,polygon_names=roi_names,band_chunks=band_chunks,fill_value=fill_value)
 
         out_folder = Path(output.csv_file).parent
 
@@ -38,7 +39,7 @@ rule extract_cubes_from_rois:
         for name, data_array in polygon_arrays.items():
             filepath = out_folder.joinpath(f'{name}.nc')
             print(f"Saving {name} to {filepath}")
-            data_array.to_netcdf(filepath)
+            data_array.to_netcdf(filepath,encoding={"spectrum": {"_FillValue": fill_value}})
             del data_array
             saved_files.append(filepath)
 
@@ -51,14 +52,14 @@ rule extract_cubes_from_rois:
 
 rule plot_rois_spectra_DN_each:
     input:
-        csv_file="data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs.csv"
+        csv_file="data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs.csv"
     params:
         figsize=(12, 6),
         dpi=300,
         subset_pct=0.01,
         spectrum='raw_DN'
     output:
-        csv_file="data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs_mean_DN.csv"
+        csv_file="data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs_mean_DN.csv"
     # benchmark:
     #     "data/interim/benchmarks/{scan_ID}/02-plot_rois_spectra_DN_each.tsv"
     run:
@@ -137,13 +138,13 @@ rule plot_rois_spectra_DN_each:
 
 rule plot_rois_spectra_DN_all:
     input:
-        csv_file="data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs_mean_DN.csv"
+        csv_file="data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs_mean_DN.csv"
     params:
         figsize=(12, 6),
         dpi=300,
         subset_pct=0.01
     output:
-        jpg_file="data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs_mean_DN.jpg"
+        jpg_file="data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs_mean_DN.jpg"
     run:
         import matplotlib
 
@@ -184,6 +185,5 @@ rule plot_rois_spectra_DN_all:
 
 rule annotations_all:
     input:
-        expand("data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs.csv",scan_ID=ALL_SCANS),
-        expand("data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs_mean_DN.csv",scan_ID=ALL_SCANS),
-        expand("data/interim/scans/{scan_ID}/ROIs/{scan_ID}_ROIs_mean_DN.jpg",scan_ID=ALL_SCANS)
+        expand("data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs_mean_DN.csv",scan_ID=ALL_SCANS),
+        expand("data/interim/scans/{scan_ID}/ROIs/00_raw_DN/{scan_ID}_ROIs_mean_DN.jpg",scan_ID=ALL_SCANS),

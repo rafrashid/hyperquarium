@@ -266,6 +266,7 @@ def extract_polygon_arrays(data_array: xr.DataArray,
         # create final dataArray
         polygon_data = xr.DataArray(
             result_data,
+            name='spectrum',
             coords={
                 'line': work_line_coords,
                 'band': band_coords,

@@ -87,6 +87,7 @@ target/
 *.swp
 *.swo
 
+workflows/all_ROIs.yaml
 figures/
 notebooks/
 src/sandbox/

@@ -22,7 +22,7 @@ rule calc_dark_current:
         )
         exposure = math.ceil(exposure)
 
-        data_array = my_utils.load_cube(bin_file=input.bin_file,scan_ID=scan_ID)
+        data_array = my_utils.load_cube(bin_file=input.bin_file)
         dark = data_array.mean(dim='line',skipna=True)  # Take the mean DN across lines
         dark.attrs.update(
             dataset=f'{dataset_name}',

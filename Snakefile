@@ -24,7 +24,7 @@ OPERATIONAL_SCANS = list(
     itertools.chain(*config['operational'].values())
 )
 
-ALL_SCANS = CALIB_SCANS + PILOT_SCANS  #+OPERATIONAL_SCANS
+ALL_SCANS = CALIB_SCANS + PILOT_SCANS + OPERATIONAL_SCANS
 
 def protect_fields(str, exclude=(), **kwargs):
     class SafeDict(dict):
@@ -43,3 +43,11 @@ import matplotlib
 matplotlib.use('agg')
 include: "workflows/dark_current_.smk"
 include: "workflows/annotations_.smk"
+include: "workflows/dark_current_correction_.smk"
+include: "workflows/generate_img_.smk"
+include: "workflows/flatfield_correction.smk"
+include: "workflows/flatfield_correction_.smk"
+include: "workflows/reflectance_calculation_.smk"
+#include: "workflows/mpbi_calculation_.smk"
+#include: "workflows/texture_calculation_.smk"
+#include: "workflows/01_pilot_.smk"
