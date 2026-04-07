@@ -63,6 +63,14 @@ rule extract_flatfield_corrected_cubes_from_rois:
         #data_array = my_utils.load_cube(bin_file=input.bin_file, scan_ID=scan_ID)
         data_array = xr.open_dataarray(input.flat_zarr_dir,engine="zarr",consolidated=False)
         data_array = data_array.sel(band=slice(params.band_start,params.band_end))
+
+        # Check which coordinates system the annotations were made using:
+        annot_fpath = Path(input.annotations_file)
+        flipped_annot_fpath = annot_fpath.parent.joinpath(f"{annot_fpath.stem}_RGB_contrast.json")
+
+        if flipped_annot_fpath.is_file():
+            data_array = data_array.isel(sample=slice(None,None,-1)).assign_coords(sample=data_array.sample.values)
+
         polygons, roi_names, labels = annotate.get_roi_polygon_labels(input.annotations_file,scan_ID=scan_ID)
 
         band_chunks = 30

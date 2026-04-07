@@ -1,8 +1,4 @@
 import math
-import pandas as pd
-import xarray as xr
-from src.hyperquarium.data import my_utils
-import math
 
 import pandas as pd
 import xarray as xr
@@ -18,9 +14,9 @@ rule flat_correcting_vector:
     input:
         nc_file="data/interim/scans/{scan_ID}/ROIs/01_dark_correction/{roi_ID}--{label}.nc",
     output:
-        nc_file="data/interim/scans/{scan_ID}/02_flat_correction/median/{roi_ID}--{label}.nc",
+        nc_file="data/interim/scans/{scan_ID}/02_flat_correction/{roi_ID}--{label}.nc",
         #csv_file="data/interim/scans/{scan_ID}/02_flat_correction/{roi_ID}--{label}.csv",
-        jpg_file="data/interim/scans/{scan_ID}/02_flat_correction/median/{roi_ID}--{label}-vectors.jpg"
+        jpg_file="data/interim/scans/{scan_ID}/02_flat_correction/{roi_ID}--{label}-vectors.jpg"
     params:
         band_start=0,
         band_end=184,
@@ -37,8 +33,8 @@ rule flat_correcting_vector:
         exposure = math.ceil(exposure)
 
         data_array = xr.load_dataarray(input.nc_file).sel(band=slice(params.band_start,params.band_end))
-        white = data_array.median(dim='line',skipna=True)  # Take the median DN across lines
-        #white = data_array.mean(dim='line',skipna=True)  # Take the median DN across lines
+        #white = data_array.median(dim='line',skipna=True)  # Take the median DN across lines
+        white = data_array.mean(dim='line',skipna=True)  # Take the mean DN across lines
         white.attrs.update(
             dataset=f'{dataset_name}',
             scan_ID=f'{scan_ID}',
@@ -88,8 +84,8 @@ rule flat_correcting_vector:
 
 rule flat_corr_vectors_all:
     input:
-        (flatfield['filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction/median')).tolist(),
+        (flatfield['filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction')).tolist(),
         (flatfield[
-             'filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction/median').replace('.nc','-vectors.jpg')).tolist()
+             'filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction').replace('.nc','-vectors.jpg')).tolist()
     #(flatfield['filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction')).tolist(),
     #(flatfield['filepath'].str.replace('ROIs/01_dark_correction','02_flat_correction').replace('.nc','-vectors.jpg')).tolist()

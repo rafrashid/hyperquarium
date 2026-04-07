@@ -17,9 +17,9 @@ roi_records = pd.read_csv("data/interim/all_ROIs.csv")
 
 rule calc_spectral_angle_map:
     input:
-        nc_file="data/interim/scans/{roi_scan_ID}/ROIs/03_reflectance/{roi_ID}.nc"
+        nc_file="data/interim/scans/{roi_scan_ID}/ROIs/{refl_type}/{roi_ID}.nc"
     output:
-        nc_file="data/interim/scans/{roi_scan_ID}/ROIs/04B_textures/{roi_ID}-SAM_map.nc"
+        nc_file="data/interim/scans/{roi_scan_ID}/ROIs/04B_textures/{refl_type}/{roi_ID}-SAM_map.nc"
     params:
         band_start=0,
         band_end=184
@@ -205,7 +205,6 @@ rule create_spectral_corr_map:
         del data_array
 
         gc.collect()
-
 
 rule calc_texture_ROIs_all:
     input:

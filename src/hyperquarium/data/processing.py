@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 from scipy import signal, stats, interpolate
+from scipy.ndimage import generic_filter
 
 
 def smooth_spectra(data_array, window_length=7, polyorder=5):
@@ -19,7 +20,6 @@ def smooth_spectra(data_array, window_length=7, polyorder=5):
         output_dtypes=[data_array.dtype]
     )
 
-
 def standardize_spectrum(data_array):
     """Standardize each pixel's spectrum (mean=0, std=1)"""
     return xr.apply_ufunc(
@@ -28,26 +28,24 @@ def standardize_spectrum(data_array):
         input_core_dims=[['band']],
         output_core_dims=[['band']],
         vectorize=True,
-        dask='parallelized',
-        kwargs={'axis': -1}  # -1 refers to the core dimension ('time')
+        dask='parallelized'
     )
 
 
-def spectral_derivative(data_array, order=1):
+def spectral_derivative(data_array, order=1, window_length=11, polyorder=3):
     """Calculate spectral derivatives"""
     return xr.apply_ufunc(
         signal.savgol_filter,
         data_array,
-        11,  # window length
-        2,  # polynomial order
         input_core_dims=[['band']],
         output_core_dims=[['band']],
         vectorize=True,
         dask='parallelized',
-        kwargs={'deriv': order},
+        kwargs={'deriv': order,
+                'window_length': window_length,  # additional args
+                'polyorder': polyorder},
         output_dtypes=[data_array.dtype]
     )
-
 
 def resample_bands(clean_spectra, new_band_values, kind='linear', old_dim='band', new_dim='wavelength'):
     """
@@ -89,6 +87,81 @@ def resample_bands(clean_spectra, new_band_values, kind='linear', old_dim='band'
     return resampled
 
 
+def l2_normalize_spectra(data_array, handle_nan='propagate'):
+    """
+    L2-normalize each pixel's spectrum using sklearn.
+    Works with both 2D (pixel, band) and 3D (line, band, sample) DataArrays.
+
+    Parameters:
+    -----------
+    data_array : xr.DataArray
+        Hyperspectral data with 'band' dimension
+    handle_nan : str
+        'propagate' - NaN pixels stay NaN
+        'zero' - NaN pixels become zero vectors
+
+    Returns:
+    --------
+    xr.DataArray : L2-normalized data
+    """
+
+    def _l2_normalize_spectrum(spectrum):
+        """Normalize a single spectrum."""
+        from sklearn.preprocessing import normalize
+        # Handle NaN
+        if handle_nan == 'propagate':
+            if np.any(np.isnan(spectrum)):
+                return np.full_like(spectrum, np.nan)
+
+        # Fill NaN with 0 for sklearn
+        spectrum_filled = np.nan_to_num(spectrum, nan=0.0)
+
+        # Reshape to 2D for sklearn (needs shape (n_samples, n_features))
+        spectrum_2d = spectrum_filled.reshape(1, -1)
+
+        # Normalize
+        normalized_2d = normalize(spectrum_2d, norm='l2', axis=1)
+
+        # Reshape back to 1D
+        return normalized_2d.flatten()
+
+    # Apply to all spectra
+    normalized = xr.apply_ufunc(
+        _l2_normalize_spectrum,
+        data_array,
+        input_core_dims=[['band']],
+        output_core_dims=[['band']],
+        vectorize=True,
+        dask='parallelized',
+        output_dtypes=[data_array.dtype]
+    )
+
+    # Copy attributes
+    normalized.attrs = data_array.attrs.copy()
+    normalized.attrs['spectrum_type'] = 'L2_norm_refl'
+    normalized.attrs['nan_handling'] = handle_nan
+
+    return normalized
+
+
+def compute_stats(data_array, quantiles=None):
+    if quantiles is None:
+        quantiles = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
+    quants = data_array.quantile(quantiles, dim="pixel")
+
+    mean = data_array.mean(dim='pixel')
+    std = data_array.std(dim='pixel')
+    cv = xr.ufuncs.divide(std, mean)
+
+    return {
+        'values': data_array,
+        'mean': mean.values,
+        'std': std.values,
+        'cv': cv.values,
+        'median': quants.sel(quantile=0.5).values,
+        'quant': {f'q{int(q * 100)}': quants.sel(quantile=q).values for q in quantiles if q != 0.5}
+    }
+
 def calculate_spectral_angle(clean_spectra, reference_spectrum):
     """
     Calculate spectral angle between each pixel and a reference spectrum.
@@ -129,7 +202,6 @@ def calculate_spectral_angle(clean_spectra, reference_spectrum):
         output_dtypes=[float]
     )
     return angles
-
 
 ## Spectral Information Divergence (SID)
 def calculate_spectral_information_divergence(clean_spectra, reference_spectrum):
@@ -199,14 +271,12 @@ def calculate_spectral_information_divergence(clean_spectra, reference_spectrum)
     )
     return sid_values
 
-
 def calculate_spectral_correlation(clean_spectra, reference_spectrum):
     """
     Calculate SCM using scipy's pearsonr function.
     This is an alternative implementation using scipy directly.
     """
     from scipy.stats import pearsonr
-
     def correlation_scipy(spectrum, reference):
         """Calculate correlation using scipy"""
         valid_mask = ~np.isnan(spectrum) & ~np.isnan(reference)
@@ -234,11 +304,175 @@ def calculate_spectral_correlation(clean_spectra, reference_spectrum):
     return correlations
 
 
-def block_reduce_with_boundary_coords(data_array, block_sizes=[3, 7, 11, 17, 25, 35, 49]):
+## Combined Similarity Analysis Function
+def calc_spectral_var_trio(clean_spectra, reference_spectrum):
+    """
+    Returns:
+    --------
+    dict : Dictionary with SAM, SID, and SCM values
+    """
+    metrics = {
+        'SAM': calculate_spectral_angle(clean_spectra, reference_spectrum),
+        'SID': calculate_spectral_information_divergence(clean_spectra, reference_spectrum),
+        'SCM': calculate_spectral_correlation(clean_spectra, reference_spectrum),
+    }
+    return {name: compute_stats(da) for name, da in metrics.items()}
+
+
+def kernel_spectral_stats(data_array, kernel_sizes=None):
+    """
+    Returns spectral statistics STDEV, CV for each kernel size.
+    """
+    if kernel_sizes is None:
+        kernel_sizes = [203, 143, 101, 71, 51, 35, 25, 17]
+    results = {
+        'mean_spectra': {},
+        'std_spectra': {},
+        'cv_spectra': {}  # Coefficient of variation
+    }
+
+    for kernel_size in kernel_sizes:
+        # Calculate mean within each kernel
+        mean_data = np.zeros_like(data_array.values)
+        std_data = np.zeros_like(data_array.values)
+
+        for band_idx in range(data_array.sizes['band']):
+            band_data = data_array.isel(band=band_idx).values
+
+            # Mean
+            mean_data[:, band_idx, :] = generic_filter(
+                band_data, np.nanmean, size=kernel_size, mode='reflect'
+            )
+
+            # Standard deviation
+            std_data[:, band_idx, :] = generic_filter(
+                band_data, np.nanstd, size=kernel_size, mode='reflect'
+            )
+
+        # Coefficient of variation (std/mean)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            cv_data = np.where(mean_data != 0, std_data / np.abs(mean_data), np.nan)
+
+        # Create DataArrays
+        results['kernel_mean'][kernel_size] = xr.DataArray(
+            mean_data, coords=data_array.coords, dims=data_array.dims)
+        results['kernel_std'][kernel_size] = xr.DataArray(
+            std_data, coords=data_array.coords, dims=data_array.dims)
+        results['kernel_cv'][kernel_size] = xr.DataArray(
+            cv_data, coords=data_array.coords, dims=data_array.dims)
+    return results
+
+
+def extract_kernel_spectra(data_array, kernel_sizes=None):
+    """
+    For each pixel, extract the mean spectrum within different kernel sizes.
+    Returns a dataset with multiple kernel-averaged spectra per pixel.
+
+    Parameters:
+    -----------
+    -----------
+    data_array : xr.DataArray
+        Input data with dims ['line', 'band', 'sample']
+    kernel_sizes : list
+        List of kernel sizes
+
+    Returns:
+    --------
+    xr.Dataset : Dataset with variables for each kernel size
+    """
+    if kernel_sizes is None:
+        kernel_sizes = [203, 143, 101, 71, 51, 37, 27, 19]
+    import xarray as xr
+
+    kernel_spectra = {}
+
+    for kernel_size in kernel_sizes:
+        print(f"Extracting spectra for kernel {kernel_size}x{kernel_size}")
+
+        # Apply spatial averaging for each band
+        averaged = np.zeros_like(data_array.values)
+
+        for band_idx in range(data_array.sizes['band']):
+            band_data = data_array.isel(band=band_idx).values
+            averaged[:, band_idx, :] = generic_filter(
+                band_data, np.nanmean, size=kernel_size, mode='reflect'
+            )
+
+        # Create DataArray
+        kernel_spectra[f'kernel_{kernel_size}'] = xr.DataArray(
+            averaged,
+            coords=data_array.coords,
+            dims=data_array.dims
+        )
+
+    # Combine into Dataset
+    dataset = xr.Dataset(kernel_spectra)
+    return dataset
+
+
+def kernel_spectral_var_trio(data_array, reference_spectrum,
+                             kernel_sizes=None):
+    """
+    Calculate SAM, SID, and SCM at multiple spatial scales.
+    Returns:
+    --------
+    dict : Nested dictionary with structure: {metric: {kernel_size: values}}
+    """
+    if kernel_sizes is None:
+        kernel_sizes = [203, 143, 101, 71, 51, 35, 25, 17]
+    print("Computing multi-scale spectral similarity metrics...")
+
+    results = {
+        'SAM': {},
+        'SID': {},
+        'SCM': {}
+    }
+
+    for kernel_size in kernel_sizes:
+        print(f"\nProcessing kernel size: {kernel_size}x{kernel_size}")
+
+        # Create kernel-averaged data
+        kernel_averaged = np.zeros_like(data_array.values)
+
+        for band_idx in range(data_array.sizes['band']):
+            band_data = data_array.isel(band=band_idx).values
+            kernel_averaged[:, band_idx, :] = generic_filter(
+                band_data, np.nanmean, size=kernel_size, mode='reflect'
+            )
+
+        # Create DataArray
+        averaged_array = xr.DataArray(
+            kernel_averaged,
+            coords=data_array.coords,
+            dims=data_array.dims
+        )
+        averaged_array.attrs = data_array.attrs.copy()
+
+        # Stack for metric calculation
+        stacked = averaged_array.stack(pixel=['line', 'sample'])
+        non_nan = ~np.isnan(stacked).all(dim='band')
+        clean_spectra = stacked.where(non_nan, drop=True)
+
+        # Calculate metrics
+        sam = calculate_spectral_angle(clean_spectra, reference_spectrum)
+        sid = calculate_spectral_information_divergence(clean_spectra, reference_spectrum)
+        scm = calculate_spectral_correlation(clean_spectra, reference_spectrum)
+
+        # Store results
+        results['SAM'][kernel_size] = sam
+        results['SID'][kernel_size] = sid
+        results['SCM'][kernel_size] = scm
+
+    return results
+
+
+def block_reduce_with_boundary_coords(data_array, block_sizes=None):
     """
     Block reduction with explicit block boundary information.
     Stores both start and center coordinates as metadata.
     """
+    if block_sizes is None:
+        block_sizes = [49, 25, 11, 7, 3, 1]
     results = {}
 
     for block_size in block_sizes:

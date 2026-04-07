@@ -13,7 +13,7 @@ scan_records = pd.read_csv(SCAN_RECORDS_PATH)
 configfile: "workflows/all_ROIs_flat.yml"
 ALL_ROIS = list(config['roi_samples'])
 ALL_ROI_IDs = [s.split('--')[0] for s in ALL_ROIS]
-ALL_ROI_SCANS = [s[:-3] for s in ALL_ROI_IDs]
+ALL_ROI_SCANS = ['-'.join(s.split('-')[:2]) for s in ALL_ROI_IDs]
 
 roi_records = pd.read_csv("data/interim/all_ROIs_flat.csv")
 grey_refs = roi_records.loc[roi_records['label'].isin(['grey_ref'])].reset_index(drop=True)
@@ -181,6 +181,7 @@ rule calc_normalized_reflectance:
         )
 
         #reflectance = reflectance.swap_dims({"band":"wavelength"})
+        #reflectance = reflectance.chunk({"line": 30, "band": -1, "sample": -1})
         reflectance.to_netcdf(output.nc_file)
         del reflectance
 

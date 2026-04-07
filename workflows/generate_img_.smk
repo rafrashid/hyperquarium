@@ -1,19 +1,32 @@
 import pandas as pd
+import xarray as xr
 
-from src.hyperquarium.data import my_utils
+from src.hyperquarium.viz import images
 
 configfile: "workflows/all_ROIs_flat.yml"
-
 roi_records = pd.read_csv("data/interim/all_ROIs_flat.csv")
 
-rule create_rgb:
+rule generate_ref_rgb:
     input:
-        nc_file="data/interim/scans/{relpath}/{filestem}.nc"
+        #ref_ncfile = "data/interim/scans/20250828-132408/ROIs/{refl}/20250828-132408-07--plug_ts2_05.nc"
+        ref_ncfile="data/interim/scans/20250731-094745/ROIs/{refl}/20250731-094745-04--res_target.nc"
     output:
-        img_file="data/interim/scans/{relpath}/{filestem}-RGB.jpg",
+        #ref_pngfile = "data/interim/Calibration/RGB_ref/{refl}/20250828-132408-07--plug_ts2_05-RGB_ref.png"
+        ref_pngfile="data/interim/Calibration/RGB_ref/{refl}/20250731-094745-04--res_target.png"
     run:
-        my_utils.create_rgb_image_from_netcdf(input.nc_file,output_file=output.img_file)
+        #load reference of a "good" scene
+        best_region = xr.load_dataarray(input.ref_ncfile)
 
-rule generate_images_all:
+        reference_rgb = images.create_rgb_from_bands(
+            best_region,
+            red_band=121,
+            green_band=51,
+            blue_band=30
+        )
+        images.save_rgb_array(reference_rgb,output.ref_pngfile)
+
+rule generate_RGB_reference_all:
     input:
-        (roi_records['filepath'].str[:-3] + "-RGB.jpg").tolist(),
+        #expand("data/interim/Calibration/RGB_ref/{refl}/20250828-132408-07--plug_ts2_05-RGB_ref.png", refl=["03_reflectance","03A_norm_refl"])
+        expand("data/interim/Calibration/RGB_ref/{refl}/20250731-094745-04--res_target.png",refl
+        =["03_reflectance", "03A_norm_refl"])
