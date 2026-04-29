@@ -149,18 +149,6 @@ rule plot_rc_second_deriv:
 
         gc.collect()
 
-#
-# rule pilot_kernel_spectra:
-#    input:
-#       nc_file="data/interim/03_reefcompare/03A_norm_refl/{label}/{roi_scan_ID}/{roi_block}.nc"
-#   output:
-#       nc_file="data/interim/03_reefcompare/{refl_type}/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_kernels.nc"
-#   run:
-#       scan_ID = wildcards.roi_scan_ID
-#       print(scan_ID)
-#
-#       data_array = xr.open_dataarray(input.nc_file)
-
 rule rc_spect_var_trio:
     input:
         nc_file="data/interim/03_reefcompare/{spectrum_type}/{label}/{roi_scan}/{roi_block}.nc"
@@ -313,31 +301,20 @@ rule rc_spect_var_trio_distr:
 
         out_fpath = Path(output.img_file)
         plt.savefig(out_fpath,dpi=params.dpi,format='jpg',bbox_inches='tight')
-        # copy_fpath = Path(output.img_file).parent.parent.joinpath(f'figures/spec_var_trio')
-        #
-        # if not copy_fpath.exists():
-        #     copy_fpath.mkdir(parents=True)
-        #
-        # copy_fpath = copy_fpath.joinpath(out_fpath.name)
-        # plt.savefig(copy_fpath,dpi=params.dpi,format='png',bbox_inches='tight')
         plt.close()
         del data_set
         gc.collect()
 
-rule reefcompare_feat_extract:
+rule reefcompare_blocks_extract:
     input:
         "data/interim/03_reefcompare/03A_norm_refl-blocks-summarised.csv",
         expand("data/interim/03_reefcompare/03A_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio.nc",
             zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS),
-        expand("data/interim/03_reefcompare/03A_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
-            zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS),
         expand("data/interim/03_reefcompare/03A_norm_refl_2nd_dx/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio.nc",
             zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS),
-        expand("data/interim/03_reefcompare/03B_L2_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio.png",
+        expand("data/interim/03_reefcompare/03B_L2_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio.nc",
             zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS),
         expand("data/interim/03_reefcompare/03B_L2_norm_refl_2nd_dx/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio.nc",
-            zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS),
-        expand("data/interim/03_reefcompare/03B_L2_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.nc",
             zip,label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_block=RC_BLOCKS)
 
 ruleorder: rc_spect_var_trio_distr > rc_spect_var_maps > rc_spect_var_trio > plot_rc_second_deriv > rc_second_deriv > rc_L2norm_refl

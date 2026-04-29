@@ -98,10 +98,6 @@ src/sandbox/
 # exclude external forked repos
 src/external
 
-# exclude some py modules
-src/hyperquarium/data/cli.py
-src/hyperquarium/data/cube_loader.py
-
 # temporal testing files
 /tmp/
 

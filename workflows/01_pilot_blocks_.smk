@@ -147,17 +147,29 @@ rule plot_pilot_second_deriv:
 
         gc.collect()
 
-#
-# rule pilot_kernel_spectra:
-#    input:
-#       nc_file="data/interim/01_pilot/03A_norm_refl/{label}/{roi_scan_ID}/{roi_block}.nc"
-#   output:
-#       nc_file="data/interim/01_pilot/{refl_type}/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_kernels.nc"
-#   run:
-#       scan_ID = wildcards.roi_scan_ID
-#       print(scan_ID)
-#
-#       data_array = xr.open_dataarray(input.nc_file)
+# rule pilot_kernel_spectral_stats:
+#     input:
+#         nc_file="data/interim/01_pilot/{refl_type}/{label}/{roi_scan_ID}/{roi_block}.nc"
+#     output:
+#         nc_file="data/interim/01_pilot/{refl_type}/{label}/{roi_scan_ID}/{roi_block}_kernels.nc"
+#     benchmark:
+#         "data/interim/01_pilot/benchmarks/{refl_type}/{label}/{roi_scan_ID}/{roi_block}_kernels.txt"
+#     params:
+#         kernel_sizes=[203, 143, 101, 71, 51, 35, 25, 17],
+#         band_start=7,# 421.3802 nm
+#         band_end=141  # 709.5606 nm
+#     run:
+#         scan_ID = wildcards.roi_scan_ID
+#         print(scan_ID)
+#         data_array = xr.open_dataarray(input.nc_file).sel(band=slice(params.band_start,params.band_end))
+#         data_shape = (data_array.sizes['line'], data_array.sizes['sample'])
+#         filtered_kernel_sizes = [x for x in params.kernel_sizes if x <= min(data_shape)]
+#         print(data_shape,filtered_kernel_sizes)
+#         ds_dict = processing.kernel_spectral_stats(data_array,kernel_sizes=filtered_kernel_sizes)
+#         ds = xr.Dataset(ds_dict)
+#         ds.to_netcdf(output.nc_file)
+#         del ds, data_array
+#         gc.collect()
 
 rule pilot_spect_var_trio:
     input:
@@ -311,25 +323,18 @@ rule pilot_spect_var_trio_distr:
 
         out_fpath = Path(output.img_file)
         plt.savefig(out_fpath,dpi=params.dpi,format='jpg',bbox_inches='tight')
-        # copy_fpath = Path(output.img_file).parent.parent.joinpath(f'figures/spec_var_trio')
-        #
-        # if not copy_fpath.exists():
-        #     copy_fpath.mkdir(parents=True)
-        #
-        # copy_fpath = copy_fpath.joinpath(out_fpath.name)
-        # plt.savefig(copy_fpath,dpi=params.dpi,format='png',bbox_inches='tight')
         plt.close()
         del data_set
         gc.collect()
 
-rule pilot_feat_extract:
+rule pilot_blocks_extract:
     input:
         expand("data/interim/01_pilot/{refl_type}-blocks-summarised.csv",refl_type=["03_reflectance", "03A_norm_refl"]),
+        # expand("data/interim/01_pilot/03A_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
+        #     zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
+        # expand("data/interim/01_pilot/03B_L2_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
+        #     zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
         expand("data/interim/01_pilot/03A_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03A_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03B_L2_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
             zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
         expand("data/interim/01_pilot/03A_norm_refl_2nd_dx/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
             zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),

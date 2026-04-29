@@ -143,7 +143,6 @@ def l2_normalize_spectra(data_array, handle_nan='propagate'):
 
     return normalized
 
-
 def compute_stats(data_array, quantiles=None):
     if quantiles is None:
         quantiles = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
@@ -164,7 +163,7 @@ def compute_stats(data_array, quantiles=None):
 
 def calculate_spectral_angle(clean_spectra, reference_spectrum):
     """
-    Calculate spectral angle between each pixel and a reference spectrum.
+    Calculate the spectral angle between each pixel and a reference spectrum.
     Returns angle in radians.
     """
 
@@ -318,97 +317,89 @@ def calc_spectral_var_trio(clean_spectra, reference_spectrum):
     }
     return {name: compute_stats(da) for name, da in metrics.items()}
 
-
 def kernel_spectral_stats(data_array, kernel_sizes=None):
     """
-    Returns spectral statistics STDEV, CV for each kernel size.
+    Returns spectral mean, standard deviation, coefficient of variation for each kernel size.
     """
     if kernel_sizes is None:
         kernel_sizes = [203, 143, 101, 71, 51, 35, 25, 17]
     results = {
-        'mean_spectra': {},
-        'std_spectra': {},
-        'cv_spectra': {}  # Coefficient of variation
+        'mean': {},
+        'std': {},
+        'cv_multi': {}  # Coefficient of variation
     }
-
     for kernel_size in kernel_sizes:
+        print(f"Kernel size: {kernel_size}x{kernel_size}")
         # Calculate mean within each kernel
         mean_data = np.zeros_like(data_array.values)
         std_data = np.zeros_like(data_array.values)
 
         for band_idx in range(data_array.sizes['band']):
             band_data = data_array.isel(band=band_idx).values
-
             # Mean
             mean_data[:, band_idx, :] = generic_filter(
                 band_data, np.nanmean, size=kernel_size, mode='reflect'
             )
-
             # Standard deviation
             std_data[:, band_idx, :] = generic_filter(
                 band_data, np.nanstd, size=kernel_size, mode='reflect'
             )
 
-        # Coefficient of variation (std/mean)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            cv_data = np.where(mean_data != 0, std_data / np.abs(mean_data), np.nan)
-
         # Create DataArrays
-        results['kernel_mean'][kernel_size] = xr.DataArray(
+        results['mean'][kernel_size] = xr.DataArray(
             mean_data, coords=data_array.coords, dims=data_array.dims)
-        results['kernel_std'][kernel_size] = xr.DataArray(
+        results['std'][kernel_size] = xr.DataArray(
             std_data, coords=data_array.coords, dims=data_array.dims)
-        results['kernel_cv'][kernel_size] = xr.DataArray(
-            cv_data, coords=data_array.coords, dims=data_array.dims)
+        cv_data = xr.ufuncs.divide(results['std'][kernel_size], results['mean'][kernel_size])
+        results['cv_multi'][kernel_size] = xr.ufuncs.divide(cv_data, data_array.sizes['band'])
+        del mean_data, std_data, cv_data
+
     return results
 
 
-def extract_kernel_spectra(data_array, kernel_sizes=None):
-    """
-    For each pixel, extract the mean spectrum within different kernel sizes.
-    Returns a dataset with multiple kernel-averaged spectra per pixel.
-
-    Parameters:
-    -----------
-    -----------
-    data_array : xr.DataArray
-        Input data with dims ['line', 'band', 'sample']
-    kernel_sizes : list
-        List of kernel sizes
-
-    Returns:
-    --------
-    xr.Dataset : Dataset with variables for each kernel size
-    """
-    if kernel_sizes is None:
-        kernel_sizes = [203, 143, 101, 71, 51, 37, 27, 19]
-    import xarray as xr
-
-    kernel_spectra = {}
-
-    for kernel_size in kernel_sizes:
-        print(f"Extracting spectra for kernel {kernel_size}x{kernel_size}")
-
-        # Apply spatial averaging for each band
-        averaged = np.zeros_like(data_array.values)
-
-        for band_idx in range(data_array.sizes['band']):
-            band_data = data_array.isel(band=band_idx).values
-            averaged[:, band_idx, :] = generic_filter(
-                band_data, np.nanmean, size=kernel_size, mode='reflect'
-            )
-
-        # Create DataArray
-        kernel_spectra[f'kernel_{kernel_size}'] = xr.DataArray(
-            averaged,
-            coords=data_array.coords,
-            dims=data_array.dims
-        )
-
-    # Combine into Dataset
-    dataset = xr.Dataset(kernel_spectra)
-    return dataset
-
+# def extract_kernel_mean_spectrum(data_array, kernel_sizes=None):
+#     """
+#     For each pixel, extract the mean spectrum within different kernel sizes.
+#     Returns a dataset with multiple kernel-averaged spectra per pixel.
+#
+#     Parameters:
+#     -----------
+#     -----------
+#     data_array : xr.DataArray
+#         Input data with dimensions ['line', 'band', 'sample']
+#     kernel_sizes : list
+#         List of kernel sizes
+#
+#     Returns:
+#     --------
+#     xr.Dataset : Dataset with variables for each kernel size
+#     """
+#     if kernel_sizes is None:
+#         kernel_sizes = [203, 143, 101, 71, 51, 35, 25, 17]
+#     kernel_spectra = {}
+#
+#     for kernel_size in kernel_sizes:
+#         print(f"Extracting spectra for kernel {kernel_size}x{kernel_size}")
+#
+#         # Apply spatial averaging for each band
+#         averaged = np.zeros_like(data_array.values)
+#
+#         for band_idx in range(data_array.sizes['band']):
+#             band_data = data_array.isel(band=band_idx).values
+#             averaged[:, band_idx, :] = generic_filter(
+#                 band_data, np.nanmean, size=kernel_size, mode='reflect'
+#             )
+#
+#         # Create DataArray
+#         kernel_spectra[f'kernel_{kernel_size}'] = xr.DataArray(
+#             averaged,
+#             coords=data_array.coords,
+#             dims=data_array.dims
+#         )
+#
+#     # Combine into Dataset
+#     dataset = xr.Dataset(kernel_spectra)
+#     return dataset
 
 def kernel_spectral_var_trio(data_array, reference_spectrum,
                              kernel_sizes=None):
