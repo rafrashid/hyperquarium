@@ -465,33 +465,30 @@ def specdiv(ds: xr.Dataset,
     pixel_coords = stacked.coords["pixel"]
     mat_all = stacked.values.T  # (n_pixels, n_features)
 
-    y_vals = pixel_coords.coords["sample"].values
-    x_vals = pixel_coords.coords["line"].values
+    line_vals = pixel_coords.coords["line"].values
+    sample_vals = pixel_coords.coords["sample"].values
 
     # Coarsened grid coordinates for community centres
     comm_ds = pixel_counts
-    cy_vals = comm_ds.coords["sample"].values
-    cx_vals = comm_ds.coords["line"].values
 
-    y_step = (ds.coords["sample"].values[1] - ds.coords["sample"].values[0]) if ds.sizes["sample"] > 1 else 1.0
-    x_step = (ds.coords["line"].values[1] - ds.coords["line"].values[0]) if ds.sizes["line"] > 1 else 1.0
+    line_step = (ds.coords["line"].values[1] - ds.coords["line"].values[0]) if ds.sizes["line"] > 1 else 1.0
+    sample_step = (ds.coords["sample"].values[1] - ds.coords["sample"].values[0]) if ds.sizes["sample"] > 1 else 1.0
 
-    # Assign each pixel to a community block index
-    n_cy, n_cx = valid_comms.values.shape
+    # Use valid_comms as the single source of truth for grid shape AND coordinates
+    # to avoid off-by-one mismatches between coarsen coords and mask shape
+    valid_comm_mask = valid_comms.values  # (n_cy, n_cx)
+    n_cy, n_cx = valid_comm_mask.shape
+    cy_vals = valid_comms.coords["line"].values  # length guaranteed == n_cy
+    cx_vals = valid_comms.coords["sample"].values  # length guaranteed == n_cx
 
-    # Assign each pixel to a community block index
     def assign_blocks(coords, step, fact, max_idx):
         """Return 0-based block index for each coordinate, clamped to [0, max_idx-1]."""
         min_c = coords.min()
         idx = ((coords - min_c) / (abs(step) * fact)).astype(int)
         return np.clip(idx, 0, max_idx - 1)
 
-    cy_idx = assign_blocks(y_vals, y_step, fact, n_cy)
-    cx_idx = assign_blocks(x_vals, x_step, fact, n_cx)
-
-    # Retain only pixels in valid communities
-    # valid community indices (in the coarsened grid)
-    valid_comm_mask = valid_comms.values  # (n_cy, n_cx)
+    cy_idx = assign_blocks(line_vals, line_step, fact, n_cy)
+    cx_idx = assign_blocks(sample_vals, sample_step, fact, n_cx)
 
     # Pixel-level validity flag
     pixel_in_valid_comm = valid_comm_mask[cy_idx, cx_idx]
@@ -504,7 +501,6 @@ def specdiv(ds: xr.Dataset,
     cx_idx_v = cx_idx[pixel_valid]
 
     # Integer community labels (flat index)
-    n_cy, n_cx = valid_comm_mask.shape
     comm_labels = cy_idx_v * n_cx + cx_idx_v
     unique_comms = np.unique(comm_labels)
     n_comms = len(unique_comms)
@@ -601,14 +597,14 @@ def specdiv(ds: xr.Dataset,
     # ------------------------------------------------------------------ #
     # 5. Map community-level results back onto spatial grids
     # ------------------------------------------------------------------ #
-    # Build coordinate arrays for coarsened grid
-    # community centre y/x from coarsened pixel_counts coords
-    comm_cy = cy_vals  # coarsened y
-    comm_cx = cx_vals  # coarsened x
+    # Build coordinate arrays from n_cy/n_cx (authoritative shape from valid_comm_mask)
+    # rather than from coarsened dataset coords, which can be off by one.
+    comm_cy = cy_vals[:n_cy]
+    comm_cx = cx_vals[:n_cx]
 
     def _fill_comm_grid(values_per_comm, comm_ids, unique_comms, cy_vals, cx_vals, n_cy, n_cx):
         """
-        Map flat per-community values back to a 2-D (y, x) grid.
+        Map flat per-community values back to a 2-D (line, sample) grid.
         values_per_comm : 1-D array of length n_comms
         Returns a DataArray.
         """
@@ -617,7 +613,10 @@ def specdiv(ds: xr.Dataset,
             row = c // n_cx
             col = c % n_cx
             grid[row, col] = values_per_comm[ci]
-        return xr.DataArray(grid, coords={"y": cy_vals, "x": cx_vals}, dims=["y", "x"])
+        # Derive coords from actual grid shape to avoid off-by-one mismatches
+        return xr.DataArray(grid,
+                            coords={"line": cy_vals[:n_cy], "sample": cx_vals[:n_cx]},
+                            dims=["line", "sample"])
 
     beta_lcsd_da = _fill_comm_grid(lcsd_beta_mean, comm_labels, unique_comms,
                                    comm_cy, comm_cx, n_cy, n_cx)
@@ -811,7 +810,7 @@ def specdiv_batch(ds: xr.Dataset,
 
     for run_idx, params in enumerate(param_grid):
         p = {**defaults, **params}
-        print(f"Run {run_idx + 1}/{len(param_grid)}: {p}")
+        # print(f"Run {run_idx + 1}/{len(param_grid)}: {p}")
 
         res = specdiv(ds,
                       fact=p["fact"],
