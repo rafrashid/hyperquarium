@@ -6,6 +6,7 @@ Adapted and extended to use with xarray-compatible hypercube data (Raf Rashid, O
 Input data expected as xarray.Dataset with data variables: PC1, PC2, PC3
 (eigenvectors / PCA scores on spatial coordinates line, sample)
 """
+import logging
 
 import numpy as np
 import xarray as xr
@@ -177,10 +178,16 @@ def pca_dataarray(da: xr.DataArray,
     stacked = da.stack(pixel=("line", "sample"))  # (band, n_pixels)
     mat = stacked.values.T  # (n_pixels, n_bands)
 
-    # Valid pixel mask: non-NaN across all bands
-    valid = np.all(np.isfinite(mat), axis=1)  # (n_pixels,)
+    # Valid pixel mask: non-NaN across all bands AND non-zero norm
+    # (zero-norm pixels cause division by zero in brightness normalisation)
+    norms = np.sqrt((mat ** 2).sum(axis=1))
+    valid = np.all(np.isfinite(mat), axis=1) & (norms > 0)
     if valid.sum() == 0:
-        raise ValueError("No valid (non-NaN) pixels found in the DataArray.")
+        raise ValueError("No valid (non-NaN, non-zero) pixels found in the DataArray.")
+    if valid.sum() < 2:
+        raise ValueError(
+            f"Only {valid.sum()} valid pixel found — need at least 2 for PCA."
+        )
 
     mat_valid = mat[valid]  # (n_valid, n_bands)
 
@@ -238,14 +245,16 @@ def pca_dataarray(da: xr.DataArray,
     # Build Dataset: PC score variables only, dims (line, sample).
     # loadings (band, pc) and valid_mask are returned separately to avoid
     # dimension conflicts; specdiv() only needs the PC score variables.
-    attrs = dict(da.attrs)
-    attrs["prop"] = result["prop"]
-    attrs["cumprop"] = result["cumprop"]
+    # prop and cumprop are stored as per-variable attributes (NetCDF4-safe).
+    base_attrs = dict(da.attrs)
+    for pc in pc_names:
+        pc_vars[pc].attrs = {**base_attrs,
+                             "prop": result["prop"][pc],
+                             "cumprop": result["cumprop"][pc]}
 
-    ds = xr.Dataset(pc_vars, attrs=attrs)
+    ds = xr.Dataset(pc_vars, attrs=base_attrs)
 
     return ds, loadings_da, valid_da
-
 
 # ---------------------------------------------------------------------------
 # Sum-of-squares helpers (replaces sum_squares and sum_squares_beta)
@@ -392,6 +401,9 @@ def specdiv(ds: xr.Dataset,
         community_stats – dict of per-community DataArrays:
                           beta_lcsd, beta_lcss, alpha_sdiv, alpha_fcsd
     """
+    # Basic config to see logs in the console
+    logging.basicConfig(level=logging.WARNING)
+
     if pc_vars is None:
         pc_vars = list(ds.data_vars)
 
@@ -404,7 +416,39 @@ def specdiv(ds: xr.Dataset,
     # Mask communities below threshold
     valid_comms = prop_map >= prop_threshold
     if not valid_comms.any():
-        raise ValueError("No community blocks meet the prop_threshold criterion.")
+        logging.warning("No community blocks meet the prop_threshold criterion.")
+        ss = {
+            "source": ["alpha", "beta", "gamma"],
+            "sum_squares": [None, None, None],
+            "prop_gamma": [None, None, 1.0],
+        }
+
+        sdiv = {
+            "mean_alpha": None,
+            "beta": None,
+            "gamma": None,
+        }
+
+        fcsd = {
+            "source": ["mean_alpha", "beta", "gamma"],
+            'fcsd_PC1': [None,
+                         None,
+                         None],
+        }
+
+        community_stats = {
+            "beta_lcsd": None,
+            "beta_lcss": None,
+            "alpha_sdiv": None,
+            "alpha_fcsd": None,
+        }
+
+        return {
+            "ss": ss,
+            "sdiv": sdiv,
+            "fcsd": fcsd,
+            "community_stats": community_stats,
+        }
 
     # Minimum valid pixel count across retained communities
     min_pixels = int(pixel_counts["n"].where(valid_comms).min().item())
@@ -484,13 +528,18 @@ def specdiv(ds: xr.Dataset,
 
     rng = np.random.default_rng()
 
+    # Recompute min_pixels from actual post-mask per-community counts
+    # (coarsened counts can differ from true valid pixel counts after NaN masking)
+    min_pixels = min(int(np.sum(comm_labels == c)) for c in unique_comms)
+
     for _ in range(n_iter):
         # Subsample min_pixels from each community
         sampled_rows = []
         sampled_comm = []
         for c in unique_comms:
             idx = np.where(comm_labels == c)[0]
-            chosen = rng.choice(idx, size=min_pixels, replace=False)
+            # replace=True is a safe fallback but should not occur after fix above
+            chosen = rng.choice(idx, size=min_pixels, replace=len(idx) < min_pixels)
             sampled_rows.append(chosen)
             sampled_comm.extend([c] * min_pixels)
 
@@ -559,7 +608,7 @@ def specdiv(ds: xr.Dataset,
 
     def _fill_comm_grid(values_per_comm, comm_ids, unique_comms, cy_vals, cx_vals, n_cy, n_cx):
         """
-        Map flat per-community values back to a 2-D (sample, line) grid.
+        Map flat per-community values back to a 2-D (y, x) grid.
         values_per_comm : 1-D array of length n_comms
         Returns a DataArray.
         """
@@ -568,7 +617,7 @@ def specdiv(ds: xr.Dataset,
             row = c // n_cx
             col = c % n_cx
             grid[row, col] = values_per_comm[ci]
-        return xr.DataArray(grid, coords={"sample": cy_vals, "line": cx_vals}, dims=["sample", "line"])
+        return xr.DataArray(grid, coords={"y": cy_vals, "x": cx_vals}, dims=["y", "x"])
 
     beta_lcsd_da = _fill_comm_grid(lcsd_beta_mean, comm_labels, unique_comms,
                                    comm_cy, comm_cx, n_cy, n_cx)

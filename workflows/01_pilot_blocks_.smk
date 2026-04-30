@@ -147,30 +147,6 @@ rule plot_pilot_second_deriv:
 
         gc.collect()
 
-# rule pilot_kernel_spectral_stats:
-#     input:
-#         nc_file="data/interim/01_pilot/{refl_type}/{label}/{roi_scan_ID}/{roi_block}.nc"
-#     output:
-#         nc_file="data/interim/01_pilot/{refl_type}/{label}/{roi_scan_ID}/{roi_block}_kernels.nc"
-#     benchmark:
-#         "data/interim/01_pilot/benchmarks/{refl_type}/{label}/{roi_scan_ID}/{roi_block}_kernels.txt"
-#     params:
-#         kernel_sizes=[203, 143, 101, 71, 51, 35, 25, 17],
-#         band_start=7,# 421.3802 nm
-#         band_end=141  # 709.5606 nm
-#     run:
-#         scan_ID = wildcards.roi_scan_ID
-#         print(scan_ID)
-#         data_array = xr.open_dataarray(input.nc_file).sel(band=slice(params.band_start,params.band_end))
-#         data_shape = (data_array.sizes['line'], data_array.sizes['sample'])
-#         filtered_kernel_sizes = [x for x in params.kernel_sizes if x <= min(data_shape)]
-#         print(data_shape,filtered_kernel_sizes)
-#         ds_dict = processing.kernel_spectral_stats(data_array,kernel_sizes=filtered_kernel_sizes)
-#         ds = xr.Dataset(ds_dict)
-#         ds.to_netcdf(output.nc_file)
-#         del ds, data_array
-#         gc.collect()
-
 rule pilot_spect_var_trio:
     input:
         nc_file="data/interim/01_pilot/{spectrum_type}/{label}/{roi_scan}/{roi_block}.nc"
@@ -327,20 +303,209 @@ rule pilot_spect_var_trio_distr:
         del data_set
         gc.collect()
 
+rule pilot_spectral_PCA:
+    input:
+        nc_file="data/interim/01_pilot/{spectrum_type}/{label}/{roi_scan}/{roi_block}.nc"
+    output:
+        scores="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_scores.nc",
+        loadings="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_loadings.nc",
+        pca_rgb="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_rgb.png"
+    params:
+        keep_variance=0.99,
+        band_start=7,# 421.3802 nm
+        band_end=141  # 709.5606 nm
+    run:
+        from src.hyperquarium.data.specdiv import pca_dataarray
+        import matplotlib.pyplot as plt
+        import math
+
+        data_array = xr.open_dataarray(input.nc_file,engine='netcdf4').sel(band=slice(params.band_start,params.band_end))
+        scores, loadings, valid_mask = pca_dataarray(data_array,scaling=1,p=params.keep_variance)
+
+        scores.to_netcdf(output.scores)
+        loadings.to_netcdf(output.loadings)
+
+        n_PC = len(scores.data_vars)
+        ncols = 3
+        nrows = math.ceil((n_PC + 1) / ncols)
+        height_per_row = 3
+        fig_height = max(3,nrows * height_per_row)
+        figsize = (9, fig_height)
+
+        fig, axs = plt.subplots(nrows=nrows,ncols=ncols,sharey=True,sharex=True,figsize=figsize)
+        axs = axs.flatten()
+
+        if n_PC >= 3:
+            def stretch(band):
+                return (band - np.min(band)) / (np.max(band) - np.min(band))
+
+
+            r_ = scores['PC1']
+            g_ = scores['PC2']
+            b_ = scores['PC3']
+
+            # Apply stretching
+            r = stretch(r_)
+            g = stretch(g_)
+            b = stretch(b_)
+
+            rgb = np.dstack((r, g, b))
+            axs[0].axis('off')
+            axs[0].imshow(rgb)
+            axs[0].set_title(f'PC1+PC2+PC3',fontsize=10)
+
+            for i, var_name in enumerate(scores.data_vars):
+                i += 1
+                da = scores[var_name]
+                axs[i].axis('off')
+                axs[i].imshow(da.values)
+                var_explained = scores[var_name].attrs["prop"] * 100
+                axs[i].set_title(f'{var_name} ({var_explained:.2f}%)',fontsize=10)
+        else:
+            for i, var_name in enumerate(scores.data_vars):
+                da = scores[var_name]
+                axs[i].axis('off')
+                axs[i].imshow(da.values)
+                var_explained = scores[var_name].attrs["prop"] * 100
+                axs[i].set_title(f'{var_name} ({var_explained:.2f}%)',fontsize=10)
+
+        # Clean up remaining slots
+        for j in range(i + 1,len(axs)):
+            axs[j].axis('off')
+
+        # Adjust layout to fit title
+        fig.subplots_adjust(top=0.5)
+        fig.suptitle(f'Label: {scores.attrs['label']}, ROI: {scores.attrs['roi_ID']}',fontsize=14)
+        plt.tight_layout()
+        plt.savefig(output.pca_rgb,bbox_inches='tight',dpi=300)
+
+rule pilot_spect_diversity:
+    input:
+        scores="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_scores.nc",
+    output:
+        csv_file="data/interim/01_pilot/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_block}_specdiv.csv",
+        png_file="data/interim/01_pilot/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_block}_specdiv.png",
+    params:
+        kernel_sizes=[203, 143, 101, 71, 51, 35, 25, 17, 13, 9, 7],
+        prop_threshold=0.8,
+        n_iter=10,
+    run:
+        from src.hyperquarium.data.specdiv import specdiv_batch
+        import matplotlib.pyplot as plt
+
+        scores = xr.open_dataset(input.scores,engine='netcdf4')
+
+        kernel_sizes = params.kernel_sizes
+        prop_threshold = params.prop_threshold
+        n_iter = params.n_iter
+        param_grid = []
+        for i in range(len(kernel_sizes)):
+            kernel_sizes[i]
+            param = {"fact": kernel_sizes[i],
+                     "prop_threshold": prop_threshold,
+                     "n_iter": n_iter}
+            param_grid.append(param)
+
+        df = specdiv_batch(scores,param_grid)
+        df.to_csv(output.csv_file,index=False)
+
+        df = df.dropna()
+        nrows = 2
+        ncols = 3
+        fig, axs = plt.subplots(nrows=nrows,ncols=ncols,figsize=(9, 6))
+        axs = axs.flatten()
+
+        title = {'mean_alpha': rf'$\alpha$-diversity', "beta": rf'$\beta$-diversity', "gamma": rf'$\gamma$-diversity'}
+        axs[0].set_ylabel(r"Proportion of SD$_{\gamma}$")
+        axs[3].set_ylabel(r"Spectral diversity")
+        ylim = (-0.01, max(df[df['source'] == 'gamma'].sdiv) + 0.01)
+
+        for i, var_name in enumerate(df['source'].unique()):
+            j = i + 3
+            plotdf = df[df['source'] == var_name]
+            axs[i].plot(plotdf.fact,plotdf.prop_gamma)
+            axs[i].set_title(title[var_name],size=13)
+            axs[i].set_ylim(-0.1,1.1)
+
+            plotdf2 = df[df['source'] == var_name]
+            axs[j].plot(plotdf.fact,plotdf.sdiv)
+            axs[j].set_ylim(ylim)
+            axs[j].set_xlabel('Plot size')
+
+        plt.suptitle(f'Label: {scores.attrs['label']}, ROI: {scores.attrs['roi_ID']}',fontsize=14,y=0.98)
+        plt.tight_layout()
+        plt.savefig(output.png_file,bbox_inches='tight',dpi=300)
+
+
+rule pilot_PCA_var_contr:
+    input:
+        scores="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_scores.nc",
+        loadings="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_loadings.nc",
+    output:
+        pca_var_contr="data/interim/01_pilot/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_var_contr.png"
+    params:
+        wavelengths="data/interim/Calibration/wavelengths_calib_2024.json",
+    run:
+        import json
+        import math
+        import matplotlib.pyplot as plt
+
+        with open(params.wavelengths,'r') as json_file:
+            data_dict = json.load(json_file)
+
+        loadings = xr.open_dataarray(input.loadings,engine='netcdf4')
+        loadings = loadings.assign_coords(wavelength=("band", data_dict['wavelengths'][7:142]))
+
+        scores = xr.open_dataset(input.scores,engine='netcdf4')
+
+        n_PC = len(scores.data_vars)
+        ncols = 3
+        nrows = math.ceil((n_PC) / ncols)
+        height_per_row = 3
+        fig_height = max(3,nrows * height_per_row)
+        figsize = (9, fig_height)
+
+        contrib = np.square(loadings)
+        da_list = []
+        for i, var_name in enumerate(scores.data_vars):
+            da = contrib.sel(pc=var_name)
+            pc_explains = scores[var_name].attrs["prop"]
+            da = da * pc_explains * 100
+            da_list.append(da)
+        total_contrib = xr.concat(da_list,dim="pc")
+
+        plot = total_contrib.plot.line(x='wavelength',col="pc",col_wrap=ncols,figsize=figsize)
+        for ax, title in zip(plot.axes.flat,scores.data_vars):
+            ax.set_title(title,fontsize=10)
+        plot.set_axis_labels("Wavelength (nm)","% of total variance")
+        plot.fig.suptitle(f'Label: {scores.attrs['label']}, ROI: {scores.attrs['roi_ID']}',fontsize=14,y=1.05)
+        plot.fig.set_constrained_layout(True)
+
+        plt.savefig(output.pca_var_contr,bbox_inches='tight',dpi=300)
+        del loadings, scores
+        gc.collect()
+
 rule pilot_blocks_extract:
     input:
         expand("data/interim/01_pilot/{refl_type}-blocks-summarised.csv",refl_type=["03_reflectance", "03A_norm_refl"]),
-        # expand("data/interim/01_pilot/03A_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
-        #     zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        # expand("data/interim/01_pilot/03B_L2_norm_refl_2nd_dx/{label}/{roi_scan_ID}/{roi_block}_2nd_dx.jpg",
-        #     zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03A_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03A_norm_refl_2nd_dx/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03B_L2_norm_refl/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
-        expand("data/interim/01_pilot/03B_L2_norm_refl_2nd_dx/04A_spec_var/{label}/{roi_scan_ID}/{roi_block}_trio_distr.jpg",
-            zip,label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS)
+        expand("data/interim/01_pilot/{refl_type}_2nd_dx/{roi_path}_2nd_dx.jpg",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
+                label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        expand("data/interim/01_pilot/{refl_type}/04A_spec_var/{roi_path}_trio_distr.jpg",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
+                label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
+            refl_type=['03A_norm_refl', '03A_norm_refl_2nd_dx',
+                       '03B_L2_norm_refl', '03B_L2_norm_refl_2nd_dx']),
+        expand("data/interim/01_pilot/{refl_type}/04B_PCA/{roi_path}_PCA_var_contr.png",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
+                label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl',
+                       # '03A_norm_refl_2nd_dx', '03B_L2_norm_refl_2nd_dx',
+                       ]),
+        expand("data/interim/01_pilot/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
+                label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_block=PILOT_BLOCKS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
 
-ruleorder: pilot_spect_var_trio_distr > pilot_spect_var_maps > pilot_spect_var_trio > plot_pilot_second_deriv > pilot_second_deriv > pilot_L2norm_refl
+ruleorder: pilot_spectral_PCA > pilot_spect_var_trio_distr > pilot_spect_var_maps > pilot_spect_var_trio > plot_pilot_second_deriv > pilot_second_deriv > pilot_L2norm_refl
