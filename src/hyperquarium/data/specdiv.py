@@ -776,15 +776,19 @@ def specdiv_to_json(results: dict, path: str = "specdiv_results.json") -> str:
     return path
 
 
+# ---------------------------------------------------------------------------
+# Batch runner
+# ---------------------------------------------------------------------------
+
 def specdiv_batch(ds: xr.Dataset,
                   param_grid: list,
                   pc_vars=None):
     """
-    Run specdiv() over multiple parameter combinations and return a single
-    tidy pandas DataFrame of scalar results (ss, sdiv, fcsd).
+    Run specdiv() over multiple parameter combinations.
 
-    Spatial community_stats vary in shape across runs so are excluded here;
-    call specdiv() directly per run if you need them.
+    Returns both a tidy pandas DataFrame of scalar results and an
+    xr.Dataset of community-level spatial DataArrays, one variable per
+    (run, stat) combination, with all scalar results stored in .attrs.
 
     Parameters
     ----------
@@ -799,56 +803,132 @@ def specdiv_batch(ds: xr.Dataset,
 
     Returns
     -------
-    pandas.DataFrame — one row per (run × source), columns:
-        run, fact, prop_threshold, n_iter,
-        source, sum_squares, prop_gamma, sdiv, fcsd_PC1, fcsd_PC2, ...
+    df         : pandas.DataFrame — one row per (run × source), columns:
+                     run, fact, prop_threshold, n_iter,
+                     source, sum_squares, prop_gamma, sdiv, fcsd_PC1, ...
+    spatial_ds : xr.Dataset — one variable per (run × stat), e.g.
+                     run1_alpha_sdiv, run1_beta_lcsd, run1_beta_lcss,
+                     run1_alpha_fcsd_PC1, ...
+                 Each DataArray carries all scalar results in .attrs:
+                     run, fact, prop_threshold, n_iter,
+                     source, sum_squares, prop_gamma, sdiv, fcsd_PC1, ...
     """
     import pandas as pd
 
     defaults = {"fact": 40, "prop_threshold": 0.5, "n_iter": 1}
     rows = []
+    run_datasets = {}
 
     for run_idx, params in enumerate(param_grid):
         p = {**defaults, **params}
-        # print(f"Run {run_idx + 1}/{len(param_grid)}: {p}")
+        run_label = f"run{run_idx + 1}"
+        spatial_vars = {}  # reset for each run
+        print(f"Run {run_idx + 1}/{len(param_grid)}: {p}")
 
-        res = specdiv(ds,
-                      fact=p["fact"],
-                      prop_threshold=p["prop_threshold"],
-                      n_iter=p["n_iter"],
-                      pc_vars=pc_vars)
+        try:
+            res = specdiv(ds,
+                          fact=p["fact"],
+                          prop_threshold=p["prop_threshold"],
+                          n_iter=p["n_iter"],
+                          pc_vars=pc_vars)
 
-        ss_df = pd.DataFrame(res["ss"])  # source / sum_squares / prop_gamma
-        fcsd_df = pd.DataFrame(res["fcsd"])  # source / fcsd_PC1 / fcsd_PC2 ...
-        fcsd_cols = [c for c in fcsd_df.columns if c != "source"]
+            ss_df = pd.DataFrame(res["ss"])
+            fcsd_df = pd.DataFrame(res["fcsd"])
+            fcsd_cols = [c for c in fcsd_df.columns if c != "source"]
 
-        # Build one row per source: mean_alpha, beta, gamma
-        # ("mean_alpha" in sdiv/fcsd corresponds to "alpha" in ss)
-        source_rows = []
-        for src in ["mean_alpha", "beta", "gamma"]:
-            ss_src = ss_df[ss_df["source"] == ("alpha" if src == "mean_alpha" else src)].iloc[0]
-            fcsd_src = fcsd_df[fcsd_df["source"] == src]
-            row = {
-                "source": src,
-                "sum_squares": ss_src["sum_squares"],
-                "prop_gamma": ss_src["prop_gamma"],
-                "sdiv": res["sdiv"][src],
-            }
-            for c in fcsd_cols:
-                row[c] = fcsd_src.iloc[0][c] if not fcsd_src.empty else None
-            source_rows.append(row)
+            # --- scalar rows (DataFrame) ---
+            source_rows = []
+            for src in ["mean_alpha", "beta", "gamma"]:
+                ss_src = ss_df[ss_df["source"] == ("alpha" if src == "mean_alpha" else src)].iloc[0]
+                fcsd_src = fcsd_df[fcsd_df["source"] == src]
+                row = {
+                    "run": run_idx + 1,
+                    "fact": p["fact"],
+                    "prop_threshold": p["prop_threshold"],
+                    "n_iter": p["n_iter"],
+                    "source": src,
+                    "sum_squares": ss_src["sum_squares"],
+                    "prop_gamma": ss_src["prop_gamma"],
+                    "sdiv": res["sdiv"][src],
+                }
+                for c in fcsd_cols:
+                    row[c] = fcsd_src.iloc[0][c] if not fcsd_src.empty else None
+                source_rows.append(row)
+            rows.extend(source_rows)
 
-        merged = pd.DataFrame(source_rows)
-        merged["run"] = run_idx + 1
-        merged["fact"] = p["fact"]
-        merged["prop_threshold"] = p["prop_threshold"]
-        merged["n_iter"] = p["n_iter"]
+            # --- build attrs dict from all scalar results for this run ---
+            def _make_attrs(stat_source):
+                base = {
+                    "run": run_idx + 1,
+                    "fact": p["fact"],
+                    "prop_threshold": p["prop_threshold"],
+                    "n_iter": p["n_iter"],
+                    "stat_source": stat_source,
+                }
+                for row in source_rows:
+                    if row["source"] == stat_source:
+                        base.update({k: v for k, v in row.items()
+                                     if k not in ("run", "fact", "prop_threshold", "n_iter")})
+                return base
 
-        rows.append(merged)
+            cs = res["community_stats"]
 
-    df = pd.concat(rows, ignore_index=True)
+            da = cs["alpha_sdiv"].copy()
+            da.attrs = _make_attrs("mean_alpha")
+            spatial_vars["alpha_sdiv"] = da
 
-    # Put metadata columns first
+            da = cs["beta_lcsd"].copy()
+            da.attrs = _make_attrs("beta")
+            spatial_vars["beta_lcsd"] = da
+
+            da = cs["beta_lcss"].copy()
+            da.attrs = _make_attrs("beta")
+            spatial_vars["beta_lcss"] = da
+
+            alpha_fcsd_ds = cs["alpha_fcsd"]
+            for pc_var in alpha_fcsd_ds.data_vars:
+                da = alpha_fcsd_ds[pc_var].copy()
+                da.attrs = _make_attrs("mean_alpha")
+                spatial_vars[f"alpha_fcsd_{pc_var}"] = da
+
+            run_ds = xr.Dataset(spatial_vars,
+                                attrs={"run": run_idx + 1,
+                                       "fact": p["fact"],
+                                       "prop_threshold": p["prop_threshold"],
+                                       "n_iter": p["n_iter"],
+                                       "failed": 0})
+            run_datasets[run_label] = run_ds
+
+        except Exception as e:
+            # print(f"  WARNING: run {run_idx + 1} failed — {e}. Producing empty outputs.")
+            # Empty scalar rows
+            for src in ["mean_alpha", "beta", "gamma"]:
+                rows.append({
+                    "run": run_idx + 1, "fact": p["fact"],
+                    "prop_threshold": p["prop_threshold"], "n_iter": p["n_iter"],
+                    "source": src, "sum_squares": np.nan, "prop_gamma": np.nan,
+                    "sdiv": np.nan,
+                })
+            # Empty spatial Dataset (NaN arrays matching ds spatial dims)
+            empty = np.full((ds.sizes["line"], ds.sizes["sample"]), np.nan)
+            empty_da = xr.DataArray(empty,
+                                    coords={"line": ds.coords["line"],
+                                            "sample": ds.coords["sample"]},
+                                    dims=["line", "sample"])
+            empty_attrs = {"run": run_idx + 1, "fact": p["fact"],
+                           "prop_threshold": p["prop_threshold"],
+                           "n_iter": p["n_iter"], "failed": 1, "error": str(e)}
+            stat_names = ["alpha_sdiv", "beta_lcsd", "beta_lcss"]
+            _pc_vars = pc_vars if pc_vars is not None else list(ds.data_vars)
+            stat_names += [f"alpha_fcsd_{v}" for v in _pc_vars]
+            run_ds = xr.Dataset(
+                {name: empty_da.assign_attrs(empty_attrs) for name in stat_names},
+                attrs=empty_attrs)
+            run_datasets[run_label] = run_ds
+
+    df = pd.concat([pd.DataFrame([r]) for r in rows], ignore_index=True)
     meta = ["run", "fact", "prop_threshold", "n_iter", "source"]
     rest = [c for c in df.columns if c not in meta]
-    return df[meta + rest]
+    df = df[meta + rest]
+
+    return df, run_datasets
