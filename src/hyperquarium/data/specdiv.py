@@ -1,12 +1,10 @@
 """
 Spectral diversity functions
 Python translation of specdiv_functions.R (Etienne Laliberté, February 2019)
-Adapted and extended to use with xarray-compatible hypercube data (Raf Rashid, October 2025)
 
 Input data expected as xarray.Dataset with data variables: PC1, PC2, PC3
-(eigenvectors / PCA scores on spatial coordinates line, sample)
+(eigenvectors / PCA scores on spatial coordinates x, y)
 """
-import logging
 
 import numpy as np
 import xarray as xr
@@ -14,7 +12,7 @@ from scipy.linalg import svd as scipy_svd
 
 
 # ---------------------------------------------------------------------------
-# Brightness normalisation (also known as L2-normalisation)
+# Brightness normalisation
 # ---------------------------------------------------------------------------
 
 def bright_norm(x: np.ndarray) -> np.ndarray:
@@ -68,6 +66,10 @@ def pca_mat(X: np.ndarray,
     """
     X = np.asarray(X, dtype=float)
     n = X.shape[0]
+    if n < 2:
+        raise ValueError(
+            f"pca_mat requires at least 2 samples, got {n}."
+        )
 
     # Mean-centre (no scaling to unit variance, matching R's scale(x, scale=FALSE))
     Y = X - X.mean(axis=0)
@@ -93,15 +95,14 @@ def pca_mat(X: np.ndarray,
     #   if p < cumprop[0]: keep [0,1]  (at least first two)
     #   else: keep all where cumprop < p, then add one more
     if p < cumprop[0]:
-        which_values = np.array([0, 1])
+        which_values = np.array([0, min(1, k - 1)])
     else:
         which_values = np.where(cumprop < p)[0]
 
-    # add the next PC (R: which.values + 1)
-    last = which_values[-1] + 1 if len(which_values) > 0 else 1
+    # add the next PC (R: which.values + 1), clamped to valid range
+    last = which_values[-1] + 1 if len(which_values) > 0 else 0
     last = min(last, k - 1)
-    sel_idx = np.append(which_values, last)
-    sel_idx = np.unique(sel_idx)  # avoid duplicates if already at boundary
+    sel_idx = np.unique(np.append(which_values, last))
 
     eigenvalues_sel = eigenvalues[sel_idx]
     n_pcs = len(sel_idx)
@@ -256,6 +257,7 @@ def pca_dataarray(da: xr.DataArray,
 
     return ds, loadings_da, valid_da
 
+
 # ---------------------------------------------------------------------------
 # Sum-of-squares helpers (replaces sum_squares and sum_squares_beta)
 # ---------------------------------------------------------------------------
@@ -362,9 +364,9 @@ def count_pixels(ds: xr.Dataset, fact: int = 40) -> xr.Dataset:
 
     # Coarsen to community blocks
     # xarray coarsen with boundary='trim' drops incomplete edge blocks
-    coarsened = valid.coarsen(line=fact, sample=fact, boundary="trim")
+    coarsened = valid.coarsen(sample=fact, line=fact, boundary="trim")
     n_valid = coarsened.sum().rename("n")
-    n_total = (valid * 0 + 1).coarsen(line=fact, sample=fact, boundary="trim").sum().rename("n_total")
+    n_total = (valid * 0 + 1).coarsen(sample=fact, line=fact, boundary="trim").sum().rename("n_total")
 
     prop = (n_valid / n_total).rename("prop")
 
@@ -386,7 +388,7 @@ def specdiv(ds: xr.Dataset,
     Parameters
     ----------
     ds             : xarray.Dataset with PC score layers (variables PC1, PC2, PC3 …).
-                     Must have spatial dimensions named 'line' and 'sample'.
+                     Must have spatial dimensions named 'x' and 'y'.
     fact           : community block size in pixels.
     prop_threshold : minimum fraction of valid pixels required to retain a community.
     n_iter         : number of random-subsampling iterations.
@@ -401,9 +403,6 @@ def specdiv(ds: xr.Dataset,
         community_stats – dict of per-community DataArrays:
                           beta_lcsd, beta_lcss, alpha_sdiv, alpha_fcsd
     """
-    # Basic config to see logs in the console
-    logging.basicConfig(level=logging.WARNING)
-
     if pc_vars is None:
         pc_vars = list(ds.data_vars)
 
@@ -416,39 +415,7 @@ def specdiv(ds: xr.Dataset,
     # Mask communities below threshold
     valid_comms = prop_map >= prop_threshold
     if not valid_comms.any():
-        logging.warning("No community blocks meet the prop_threshold criterion.")
-        ss = {
-            "source": ["alpha", "beta", "gamma"],
-            "sum_squares": [None, None, None],
-            "prop_gamma": [None, None, 1.0],
-        }
-
-        sdiv = {
-            "mean_alpha": None,
-            "beta": None,
-            "gamma": None,
-        }
-
-        fcsd = {
-            "source": ["mean_alpha", "beta", "gamma"],
-            'fcsd_PC1': [None,
-                         None,
-                         None],
-        }
-
-        community_stats = {
-            "beta_lcsd": None,
-            "beta_lcss": None,
-            "alpha_sdiv": None,
-            "alpha_fcsd": None,
-        }
-
-        return {
-            "ss": ss,
-            "sdiv": sdiv,
-            "fcsd": fcsd,
-            "community_stats": community_stats,
-        }
+        raise ValueError("No community blocks meet the prop_threshold criterion.")
 
     # Minimum valid pixel count across retained communities
     min_pixels = int(pixel_counts["n"].where(valid_comms).min().item())
@@ -900,7 +867,7 @@ def specdiv_batch(ds: xr.Dataset,
             run_datasets[run_label] = run_ds
 
         except Exception as e:
-            # print(f"  WARNING: run {run_idx + 1} failed — {e}. Producing empty outputs.")
+            print(f"  WARNING: run {run_idx + 1} failed — {e}. Producing empty outputs.")
             # Empty scalar rows
             for src in ["mean_alpha", "beta", "gamma"]:
                 rows.append({
@@ -927,6 +894,8 @@ def specdiv_batch(ds: xr.Dataset,
             run_datasets[run_label] = run_ds
 
     df = pd.concat([pd.DataFrame([r]) for r in rows], ignore_index=True)
+    # Deduplicate: keep last occurrence of each (run, source) in case of retry
+    df = df.drop_duplicates(subset=["run", "source"], keep="last")
     meta = ["run", "fact", "prop_threshold", "n_iter", "source"]
     rest = [c for c in df.columns if c not in meta]
     df = df[meta + rest]
