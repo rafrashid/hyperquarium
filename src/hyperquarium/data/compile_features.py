@@ -53,6 +53,14 @@ BLOCK_SIZE: str = "1x1"
 # Set to None to extract ALL variables automatically
 SPECDIV_VARS: list[str] | None = None
 
+# Spectral band selection and interpolation (applied in load_spectrum).
+# Bands are selected by wavelength value using the 'wavelength' coordinate.
+# Set WAVELENGTH_MIN / WAVELENGTH_MAX to None to skip band selection.
+# Set WAVELENGTH_STEP to None to skip interpolation.
+WAVELENGTH_MIN: float | None = 425.0  # nm
+WAVELENGTH_MAX: float | None = 705.0  # nm
+WAVELENGTH_STEP: float | None = 2.0  # nm — interpolation interval
+
 # Labels to include in the final dataset.
 # e.g. ["turf_algae", "not_turf_algae"] — set to [] to include all labels.
 INCLUDE_LABELS: list[str] = []
@@ -96,7 +104,7 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
     Auto-transposes to (line, band, sample) if the order differs.
     """
     path = data_dir / f"{file_stem(roi_id)}.nc"
-    da = xr.open_dataarray(path).sel(band=slice(7, 141))
+    da = xr.open_dataarray(path)
 
     # --- label check — skip ROI early if label not in INCLUDE_LABELS ---
     label = da.attrs.get("label")
@@ -126,11 +134,34 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
             "Expected a square spatial footprint."
         )
 
+    # --- wavelength band selection ---
+    if WAVELENGTH_MIN is not None or WAVELENGTH_MAX is not None:
+        if "wavelength" not in da.coords:
+            raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found on 'band' dim.")
+        wl_min = WAVELENGTH_MIN if WAVELENGTH_MIN is not None else float(da.wavelength.min())
+        wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
+        da = da.sel(band=(da.wavelength >= wl_min) & (da.wavelength <= wl_max))
+
+    # --- wavelength interpolation ---
+    if WAVELENGTH_STEP is not None:
+        if "wavelength" not in da.coords:
+            raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found for interpolation.")
+        wl_min = float(da.wavelength.min())
+        wl_max = float(da.wavelength.max())
+        wl_grid = np.arange(wl_min, wl_max + WAVELENGTH_STEP, WAVELENGTH_STEP)
+        da = da.interp(wavelength=wl_grid, method="linear")
+
     # Stack (line, sample) → pixel, leaving band as columns
     da_stacked = da.stack(pixel=("line", "sample"))  # (band, pixel)
     df = da_stacked.to_pandas().T  # (pixel, band)
     df.index.names = ["line", "sample"]
-    df.columns = [f"band_{int(b)}" for b in df.columns]
+
+    # Name columns by wavelength if available, otherwise by band index
+    if "wavelength" in da.coords:
+        df.columns = [f"{float(da.wavelength.sel(band=b).values):.1f}_nm" for b in da.band.values]
+    else:
+        df.columns = [f"band_{int(b)}" for b in df.columns]
+
     df = df.reset_index()
 
     # Attach metadata from attrs
@@ -326,16 +357,17 @@ def compile_all(
 
     final_df = pd.concat(all_dfs, ignore_index=True)
 
-    if not all_dfs:
-        raise RuntimeError("No ROIs compiled — check your data/output paths.")
-
-    final_df = pd.concat(all_dfs, ignore_index=True)
-
     # Reorder: metadata first, then features, label last
     meta_cols = ["roi_ID", "scan_ID", "dataset", "exposure", "n_valid_pixels",
                  "line", "sample"]
-    band_cols = sorted([c for c in final_df.columns if c.startswith("band_")],
-                       key=lambda x: int(x.split("_")[1]))
+    # Spectrum cols: wavelength-named (wl_425.0) or band-indexed (band_0)
+    band_cols = sorted(
+        [c for c in final_df.columns if c.endswith("_nm")],
+        key=lambda x: float(x.replace("_nm", ""))
+    ) or sorted(
+        [c for c in final_df.columns if c.startswith("band_")],
+        key=lambda x: int(x.split("_")[1])
+    )
     glcm_cols = sorted([c for c in final_df.columns
                         if any(c.startswith(f) for f in GLCM_FEATURES)])
     sdiv_cols = sorted([c for c in final_df.columns if c.startswith("sdiv_")])
@@ -360,7 +392,9 @@ def compile_all(
     print(f"Saved to: {save_path}")
     print(f"\nColumn groups:")
     print(f"  Metadata : {len([c for c in meta_cols if c in final_df.columns])}")
-    print(f"  Spectrum : {len(band_cols)} bands")
+    wl_label = (f"{WAVELENGTH_MIN}–{WAVELENGTH_MAX} nm @ {WAVELENGTH_STEP} nm"
+                if WAVELENGTH_STEP is not None else f"{WAVELENGTH_MIN}–{WAVELENGTH_MAX} nm")
+    print(f"  Spectrum : {len(band_cols)} bands ({wl_label})")
     print(f"  GLCM     : {len(glcm_cols)} features")
     print(f"  Specdiv  : {len(sdiv_cols)} features")
     print(f"  Label    : {final_df['label'].nunique()} classes → {final_df['label'].unique().tolist()}")
