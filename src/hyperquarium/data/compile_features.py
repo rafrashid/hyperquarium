@@ -140,7 +140,8 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
             raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found on 'band' dim.")
         wl_min = WAVELENGTH_MIN if WAVELENGTH_MIN is not None else float(da.wavelength.min())
         wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
-        da = da.sel(band=(da.wavelength >= wl_min) & (da.wavelength <= wl_max))
+        mask = (da.wavelength >= wl_min) & (da.wavelength <= wl_max)
+        da = da.isel(band=mask.values)
 
     # --- wavelength interpolation ---
     if WAVELENGTH_STEP is not None:
@@ -149,18 +150,23 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
         wl_min = float(da.wavelength.min())
         wl_max = float(da.wavelength.max())
         wl_grid = np.arange(wl_min, wl_max + WAVELENGTH_STEP, WAVELENGTH_STEP)
-        da = da.interp(wavelength=wl_grid, method="linear")
+        # Swap band index to wavelength, interpolate, then restore
+        da = da.assign_coords(band=da.wavelength.values).interp(band=wl_grid, method="linear")
 
     # Stack (line, sample) → pixel, leaving band as columns
     da_stacked = da.stack(pixel=("line", "sample"))  # (band, pixel)
     df = da_stacked.to_pandas().T  # (pixel, band)
     df.index.names = ["line", "sample"]
 
-    # Name columns by wavelength if available, otherwise by band index
-    if "wavelength" in da.coords:
+    # Name columns by wavelength: band dim holds wavelength values after interp,
+    # or use the wavelength coord if no interpolation was done
+    if WAVELENGTH_STEP is not None:
+        # band dim was replaced with wavelength values during interp
+        df.columns = [f"{float(b):.1f}_nm" for b in da.band.values]
+    elif "wavelength" in da.coords:
         df.columns = [f"{float(da.wavelength.sel(band=b).values):.1f}_nm" for b in da.band.values]
     else:
-        df.columns = [f"band_{int(b)}" for b in df.columns]
+        df.columns = [f"band_{int(b)}" for b in da.band.values]
 
     df = df.reset_index()
 
