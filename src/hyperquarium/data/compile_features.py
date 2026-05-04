@@ -53,10 +53,9 @@ BLOCK_SIZE: str = "1x1"
 # Set to None to extract ALL variables automatically
 SPECDIV_VARS: list[str] | None = None
 
-# Labels to exclude from the final dataset.
-# e.g. ["unknown", "shadow"] — set to [] to keep all labels.
-EXCLUDE_LABELS: list[str] = []
-
+# Labels to include in the final dataset.
+# e.g. ["turf_algae", "not_turf_algae"] — set to [] to include all labels.
+INCLUDE_LABELS: list[str] = []
 
 # ---------------------------------------------------------------------------
 
@@ -98,6 +97,13 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
     """
     path = data_dir / f"{file_stem(roi_id)}.nc"
     da = xr.open_dataarray(path).sel(band=slice(7, 141))
+
+    # --- label check — skip ROI early if label not in INCLUDE_LABELS ---
+    label = da.attrs.get("label")
+    if INCLUDE_LABELS and label not in INCLUDE_LABELS:
+        print(f"  [SKIP] {roi_id}: label '{label}' not in INCLUDE_LABELS")
+        da.close()
+        return None
 
     # --- dim presence check ---
     expected_dims = {"line", "band", "sample"}
@@ -302,10 +308,12 @@ def compile_all(
         data_dir: Path = DATA_DIR,
         output_dir: Path = OUTPUT_DIR,
         save_path: Path = SAVE_PATH,
-        exclude_labels: list[str] = EXCLUDE_LABELS,
+        include_labels: list[str] = INCLUDE_LABELS,
 ) -> pd.DataFrame:
     roi_ids = discover_roi_ids(data_dir, output_dir)
     print(f"Found {len(roi_ids)} ROIs: {roi_ids[:5]}{'...' if len(roi_ids) > 5 else ''}")
+    if include_labels:
+        print(f"Including only labels: {include_labels}")
 
     all_dfs = []
     for roi_id in tqdm(roi_ids, desc="Compiling ROIs"):
@@ -317,14 +325,6 @@ def compile_all(
         raise RuntimeError("No ROIs compiled — check your data/output paths.")
 
     final_df = pd.concat(all_dfs, ignore_index=True)
-
-    # --- Label exclusion ---
-    if exclude_labels:
-        mask = final_df["label"].isin(exclude_labels)
-        n_excluded = mask.sum()
-        excluded_counts = final_df.loc[mask, "label"].value_counts().to_dict()
-        final_df = final_df[~mask].reset_index(drop=True)
-        print(f"\nExcluded {n_excluded} pixels with labels: {excluded_counts}")
 
     if not all_dfs:
         raise RuntimeError("No ROIs compiled — check your data/output paths.")
