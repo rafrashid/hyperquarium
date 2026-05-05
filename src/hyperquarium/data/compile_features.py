@@ -126,12 +126,12 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
         print(f"  [INFO] {roi_id}: transposing dims {da.dims} → (line, band, sample)")
         da = da.transpose("line", "band", "sample")
 
-    # --- spatial square check ---
+    # --- spatial square check (allow ±1 between line and sample) ---
     n_line, n_sample = da.sizes["line"], da.sizes["sample"]
-    if n_line != n_sample:
+    if abs(n_line - n_sample) > 1:
         raise ValueError(
-            f"[{roi_id}] line ({n_line}) ≠ sample ({n_sample}). "
-            "Expected a square spatial footprint."
+            f"[{roi_id}] line ({n_line}) and sample ({n_sample}) differ by more than 1. "
+            "Expected a near-square spatial footprint."
         )
 
     # --- wavelength band selection ---
@@ -149,14 +149,22 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
             raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found for interpolation.")
         wl_min = WAVELENGTH_MIN if WAVELENGTH_MIN is not None else float(da.wavelength.min())
         wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
-        wl_grid = np.arange(wl_min, wl_max + WAVELENGTH_STEP / 2, WAVELENGTH_STEP)
+        n_steps = round((wl_max - wl_min) / WAVELENGTH_STEP) + 1
+        wl_grid = np.linspace(wl_min, wl_max, n_steps)
         # Swap band index to wavelength values, interpolate onto fixed grid
         da = da.assign_coords(band=da.wavelength.values).interp(
             band=wl_grid, method="linear"
         )
 
-    # Stack (line, sample) → pixel, leaving band as columns
-    da_stacked = da.stack(pixel=("line", "sample"))  # (band, pixel)
+    # Drop pixels where all bands are NaN before stacking
+    valid_mask = ~np.isnan(da).all(dim="band")
+    da = da.where(valid_mask, drop=True)
+
+    # Stack (line, sample) → pixel, dropping any remaining all-NaN pixels
+    da_stacked = da.stack(pixel=("line", "sample"))
+    non_nan_pixels = ~np.isnan(da_stacked).all(dim="band")
+    da_stacked = da_stacked.where(non_nan_pixels, drop=True)  # (band, pixel)
+
     df = da_stacked.to_pandas().T  # (pixel, band)
     df.index.names = ["line", "sample"]
 
@@ -206,14 +214,16 @@ def load_glcm(roi_id: str, output_dir: Path) -> pd.DataFrame:
         ds = xr.open_dataset(path)
         rows = []
         for var in ds.data_vars:
-            # var names are window_7, window_9, … — extract size
             m = re.match(r"window_(\d+)", var)
             if not m:
                 continue
             size = int(m.group(1))
             col = f"{feature}_window_{size}"
             da = ds[var]
-            sub = da.to_dataframe(name=col)[col].reset_index()
+            # Drop pixels that are NaN
+            valid = da.where(~np.isnan(da), drop=True)
+            sub = valid.to_dataframe(name=col)[col].reset_index()
+            sub = sub.dropna(subset=[col])
             rows.append(sub.set_index(["line", "sample"])[[col]])
 
         if rows:
@@ -251,13 +261,18 @@ def _run_is_empty(ds: xr.Dataset) -> bool:
     )
 
 
-def load_specdiv(roi_id: str, data_dir: Path) -> pd.DataFrame:
+def load_specdiv(roi_id: str, data_dir: Path,
+                 target_lines: np.ndarray, target_samples: np.ndarray) -> pd.DataFrame:
     """
     Load ALL non-empty specdiv run Datasets for this ROI.
 
     Each run's variables are read from the global attribute 'fact' (plot size)
     and named: sdiv_{var}_plot_{fact}
     e.g. sdiv_alpha_sdiv_plot_7, sdiv_beta_lcsd_plot_101
+
+    Specdiv grids are coarser than the spectrum grid. Each variable is
+    reprojected onto the spectrum's (line, sample) coordinates via bilinear
+    interpolation before joining.
 
     Runs where every variable is entirely NaN are skipped.
     Returns a wide DataFrame with columns for every (var × plot_size) combination,
@@ -285,7 +300,17 @@ def load_specdiv(roi_id: str, data_dir: Path) -> pd.DataFrame:
             if var not in ds:
                 continue
             col = f"sdiv_{var}_plot_{fact}"
-            sub = ds[var].to_dataframe(name=col)[col].reset_index()
+            da = ds[var]
+
+            # Reproject coarser specdiv grid onto spectrum (line, sample) coords
+            da_reproj = da.interp(
+                line=target_lines,
+                sample=target_samples,
+                method="linear"
+            )
+
+            sub = da_reproj.to_dataframe(name=col)[col].reset_index()
+            sub = sub.dropna(subset=[col])
             frames.append(sub.set_index(["line", "sample"])[[col]])
 
         ds.close()
@@ -319,6 +344,8 @@ def compile_roi(roi_id: str, data_dir: Path, output_dir: Path) -> pd.DataFrame |
 
     # Use (line, sample) as the join key
     df = spectrum_df.copy()
+    target_lines = spectrum_df["line"].values
+    target_samples = spectrum_df["sample"].values
 
     # --- GLCM ---
     glcm_df = load_glcm(roi_id, output_dir)
@@ -328,10 +355,8 @@ def compile_roi(roi_id: str, data_dir: Path, output_dir: Path) -> pd.DataFrame |
         print(f"  [WARN] No GLCM features for {roi_id}")
 
     # --- Spectral diversity ---
-    sdiv_df = load_specdiv(roi_id, data_dir)
+    sdiv_df = load_specdiv(roi_id, data_dir, target_lines, target_samples)
     if not sdiv_df.empty:
-        # Reindex to spectrum grid if coords differ (same coords per spec,
-        # but we use a left-merge to be safe)
         df = df.merge(sdiv_df, on=["line", "sample"], how="left")
     else:
         print(f"  [WARN] No specdiv features for {roi_id}")
