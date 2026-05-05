@@ -53,7 +53,8 @@ BLOCK_SIZE: str = "1x1"
 # Set to None to extract ALL variables automatically
 SPECDIV_VARS: list[str] | None = None
 
-# Spectral band selection and interpolation (applied in load_spectrum).
+# Maximum allowed difference between line and sample dimensions.
+SPATIAL_TOLERANCE: int = 5
 # Bands are selected by wavelength value using the 'wavelength' coordinate.
 # Set WAVELENGTH_MIN / WAVELENGTH_MAX to None to skip band selection.
 # Set WAVELENGTH_STEP to None to skip interpolation.
@@ -126,12 +127,12 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
         print(f"  [INFO] {roi_id}: transposing dims {da.dims} → (line, band, sample)")
         da = da.transpose("line", "band", "sample")
 
-    # --- spatial square check (allow ±1 between line and sample) ---
+    # --- spatial square check ---
     n_line, n_sample = da.sizes["line"], da.sizes["sample"]
-    if abs(n_line - n_sample) > 1:
+    if abs(n_line - n_sample) > SPATIAL_TOLERANCE:
         raise ValueError(
-            f"[{roi_id}] line ({n_line}) and sample ({n_sample}) differ by more than 1. "
-            "Expected a near-square spatial footprint."
+            f"[{roi_id}] line ({n_line}) and sample ({n_sample}) differ by more than "
+            f"{SPATIAL_TOLERANCE}. Expected a near-square spatial footprint."
         )
 
     # --- wavelength band selection ---
