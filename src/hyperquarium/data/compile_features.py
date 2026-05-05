@@ -303,14 +303,19 @@ def load_specdiv(roi_id: str, data_dir: Path,
             col = f"sdiv_{var}_plot_{fact}"
             da = ds[var]
 
-            # Reproject coarser specdiv grid onto spectrum (line, sample) coords
+            # Reproject coarser specdiv grid onto spectrum (line, sample) coords.
+            # Use a Dataset of coords to get paired interpolation (not outer product).
             da_reproj = da.interp(
-                line=target_lines,
-                sample=target_samples,
+                coords={
+                    "line": xr.DataArray(target_lines, dims="pixel"),
+                    "sample": xr.DataArray(target_samples, dims="pixel"),
+                },
                 method="linear"
             )
-
-            sub = da_reproj.to_dataframe(name=col)[col].reset_index()
+            sub = (da_reproj
+                   .to_dataframe(name=col)
+                   .reset_index(drop=True)
+                   .assign(line=target_lines, sample=target_samples))
             sub = sub.dropna(subset=[col])
             frames.append(sub.set_index(["line", "sample"])[[col]])
 
