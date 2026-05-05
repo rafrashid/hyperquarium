@@ -59,7 +59,7 @@ SPECDIV_VARS: list[str] | None = None
 # Set WAVELENGTH_STEP to None to skip interpolation.
 WAVELENGTH_MIN: float | None = 425.0  # nm
 WAVELENGTH_MAX: float | None = 705.0  # nm
-WAVELENGTH_STEP: float | None = 2.0  # nm — interpolation interval
+WAVELENGTH_STEP: int | None = 2  # nm — interpolation interval
 
 # Labels to include in the final dataset.
 # e.g. ["turf_algae", "not_turf_algae"] — set to [] to include all labels.
@@ -147,11 +147,13 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
     if WAVELENGTH_STEP is not None:
         if "wavelength" not in da.coords:
             raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found for interpolation.")
-        wl_min = float(da.wavelength.min())
-        wl_max = float(da.wavelength.max())
-        wl_grid = np.arange(wl_min, wl_max + WAVELENGTH_STEP, WAVELENGTH_STEP)
-        # Swap band index to wavelength, interpolate, then restore
-        da = da.assign_coords(band=da.wavelength.values).interp(band=wl_grid, method="linear")
+        wl_min = WAVELENGTH_MIN if WAVELENGTH_MIN is not None else float(da.wavelength.min())
+        wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
+        wl_grid = np.arange(wl_min, wl_max + WAVELENGTH_STEP / 2, WAVELENGTH_STEP)
+        # Swap band index to wavelength values, interpolate onto fixed grid
+        da = da.assign_coords(band=da.wavelength.values).interp(
+            band=wl_grid, method="linear"
+        )
 
     # Stack (line, sample) → pixel, leaving band as columns
     da_stacked = da.stack(pixel=("line", "sample"))  # (band, pixel)
@@ -162,9 +164,9 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
     # or use the wavelength coord if no interpolation was done
     if WAVELENGTH_STEP is not None:
         # band dim was replaced with wavelength values during interp
-        df.columns = [f"{float(b):.1f}_nm" for b in da.band.values]
+        df.columns = [f"{int(b)}_nm" for b in da.band.values]
     elif "wavelength" in da.coords:
-        df.columns = [f"{float(da.wavelength.sel(band=b).values):.1f}_nm" for b in da.band.values]
+        df.columns = [f"{int(da.wavelength.sel(band=b).values)}_nm" for b in da.band.values]
     else:
         df.columns = [f"band_{int(b)}" for b in da.band.values]
 
@@ -369,7 +371,7 @@ def compile_all(
     # Spectrum cols: wavelength-named (wl_425.0) or band-indexed (band_0)
     band_cols = sorted(
         [c for c in final_df.columns if c.endswith("_nm")],
-        key=lambda x: float(x.replace("_nm", ""))
+        key=lambda x: int(x.replace("_nm", ""))
     ) or sorted(
         [c for c in final_df.columns if c.startswith("band_")],
         key=lambda x: int(x.split("_")[1])
