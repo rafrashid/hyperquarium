@@ -135,16 +135,10 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
             f"{SPATIAL_TOLERANCE}. Expected a near-square spatial footprint."
         )
 
-    # --- wavelength band selection ---
-    if WAVELENGTH_MIN is not None or WAVELENGTH_MAX is not None:
-        if "wavelength" not in da.coords:
-            raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found on 'band' dim.")
-        wl_min = WAVELENGTH_MIN if WAVELENGTH_MIN is not None else float(da.wavelength.min())
-        wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
-        mask = (da.wavelength >= wl_min) & (da.wavelength <= wl_max)
-        da = da.isel(band=mask.values)
-
     # --- wavelength interpolation ---
+    # No pre-selection needed — the raw data covers 421–709 nm, which fully
+    # contains the target grid (WAVELENGTH_MIN–WAVELENGTH_MAX). Interpolating
+    # directly onto the fixed grid avoids edge NaNs caused by clipping.
     if WAVELENGTH_STEP is not None:
         if "wavelength" not in da.coords:
             raise ValueError(f"[{roi_id}] No 'wavelength' coordinate found for interpolation.")
@@ -152,19 +146,14 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
         wl_max = WAVELENGTH_MAX if WAVELENGTH_MAX is not None else float(da.wavelength.max())
         n_steps = round((wl_max - wl_min) / WAVELENGTH_STEP) + 1
         wl_grid = np.linspace(wl_min, wl_max, n_steps)
-        # Swap band index to wavelength values, interpolate onto fixed grid
         da = da.assign_coords(band=da.wavelength.values).interp(
             band=wl_grid, method="linear"
         )
 
-    # Drop pixels where all bands are NaN before stacking
-    valid_mask = ~np.isnan(da).all(dim="band")
-    da = da.where(valid_mask, drop=True)
-
-    # Stack (line, sample) → pixel, dropping any remaining all-NaN pixels
-    da_stacked = da.stack(pixel=("line", "sample"))
-    non_nan_pixels = ~np.isnan(da_stacked).all(dim="band")
-    da_stacked = da_stacked.where(non_nan_pixels, drop=True)  # (band, pixel)
+    # Stack first, then filter — avoids drop=True behaving unexpectedly on 3D arrays
+    da_stacked = da.stack(pixel=("line", "sample"))  # (band, pixel)
+    valid_mask = ~np.isnan(da_stacked).all(dim="band")  # pixels with at least one valid band
+    da_stacked = da_stacked.isel(pixel=valid_mask.values)  # keep only valid pixels
 
     df = da_stacked.to_pandas().T  # (pixel, band)
     df.index.names = ["line", "sample"]
