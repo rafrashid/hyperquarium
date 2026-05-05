@@ -169,6 +169,8 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
         df.columns = [f"band_{int(b)}" for b in da.band.values]
 
     df = df.reset_index()
+    df["line"] = df["line"].astype(int)
+    df["sample"] = df["sample"].astype(int)
 
     # Attach metadata from attrs
     attrs = da.attrs
@@ -210,10 +212,10 @@ def load_glcm(roi_id: str, output_dir: Path) -> pd.DataFrame:
             size = int(m.group(1))
             col = f"{feature}_window_{size}"
             da = ds[var]
-            # Drop pixels that are NaN
-            valid = da.where(~np.isnan(da), drop=True)
-            sub = valid.to_dataframe(name=col)[col].reset_index()
+            sub = da.to_dataframe(name=col)[col].reset_index()
             sub = sub.dropna(subset=[col])
+            sub["line"] = sub["line"].astype(int)
+            sub["sample"] = sub["sample"].astype(int)
             rows.append(sub.set_index(["line", "sample"])[[col]])
 
         if rows:
@@ -304,7 +306,8 @@ def load_specdiv(roi_id: str, data_dir: Path,
             sub = (da_reproj
                    .to_dataframe(name=col)
                    .reset_index(drop=True)
-                   .assign(line=target_lines, sample=target_samples))
+                   .assign(line=target_lines.astype(int),
+                           sample=target_samples.astype(int)))
             sub = sub.dropna(subset=[col])
             frames.append(sub.set_index(["line", "sample"])[[col]])
 
