@@ -159,7 +159,7 @@ def compute_metrics(
             class_names[i]: round(
                 f1_score(y_true, y_pred, labels=[i], average="macro", zero_division=0), 5
             )
-            for i in range(n_classes)
+            for i in labels_present
         },
     }
     save_json(metrics, out_dir / "metrics.json")
