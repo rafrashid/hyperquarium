@@ -52,12 +52,14 @@ def predict(
     raw = booster.predict(dmatrix)
 
     if n_classes == 2:
-        # Binary: raw output is probability of class 1
         y_pred_proba = raw
         y_pred = (raw >= 0.5).astype(int)
     else:
-        # Multiclass: raw shape is (n_samples, n_classes)
-        y_pred_proba = raw.reshape(-1, n_classes)
+        # Infer trained n_classes from raw output size, not the passed argument.
+        # These differ when the dataset is a subset that lacks some classes
+        # (e.g. a stratified sample used for testing the pipeline locally).
+        trained_n_classes = raw.size // dmatrix.num_row()
+        y_pred_proba = raw.reshape(-1, trained_n_classes)
         y_pred = np.argmax(y_pred_proba, axis=1)
 
     return y_pred, y_pred_proba
@@ -107,26 +109,39 @@ def compute_metrics(
     """
     class_names = list(le.classes_)
 
+    # Restrict to classes present in y_true — handles subsampled datasets
+    # where some classes may have been dropped, without requiring any change
+    # to LEVEL_CONFIGS or the label encoder.
+    labels_present = sorted(set(y_true))
+    names_present = [class_names[i] for i in labels_present]
+    n_classes_present = len(labels_present)
+
+    if n_classes_present < len(class_names):
+        logger.warning(
+            f"{len(class_names) - n_classes_present} class(es) absent from evaluation set: "
+            f"{[class_names[i] for i in range(len(class_names)) if i not in labels_present]}"
+        )
+
     report = classification_report(
         y_true, y_pred,
-        target_names=class_names,
+        labels=labels_present,
+        target_names=names_present,
         output_dict=True,
         zero_division=0,
     )
     report_df = pd.DataFrame(report).T
     save_csv(report_df, out_dir / "classification_report.csv")
 
-    # Macro F1 (treats all classes equally — key for imbalanced evaluation)
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
-    # Average precision (AUC-PR) per class
-    if n_classes == 2:
-        ap_scores = {"class_1": average_precision_score(y_true, y_pred_proba)}
+    # Average precision (AUC-PR) — only for classes present in y_true
+    if n_classes_present == 2 and len(class_names) == 2:
+        ap_scores = {class_names[1]: average_precision_score(y_true, y_pred_proba)}
     else:
-        y_bin = label_binarize(y_true, classes=list(range(n_classes)))
+        y_bin = label_binarize(y_true, classes=labels_present)
         ap_scores = {
-            class_names[i]: average_precision_score(y_bin[:, i], y_pred_proba[:, i])
-            for i in range(n_classes)
+            names_present[i]: average_precision_score(y_bin[:, i], y_pred_proba[:, labels_present[i]])
+            for i in range(n_classes_present)
         }
 
     metrics = {
@@ -169,6 +184,10 @@ def plot_confusion_matrix(
     """
     class_names = list(le.classes_)
     cm = confusion_matrix(y_true, y_pred)
+
+    # Restrict to classes actually present in y_true
+    labels_present = sorted(set(y_true) | set(y_pred))
+    class_names = [class_names[i] for i in labels_present]
 
     # Save raw counts
     cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
@@ -227,18 +246,19 @@ def plot_pr_curves(
         out_dir:      Output directory.
     """
     class_names = list(le.classes_)
+    labels_present = sorted(set(y_true))
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    if n_classes == 2:
+    if len(class_names) == 2:
         prec, rec, _ = precision_recall_curve(y_true, y_pred_proba)
         ap = average_precision_score(y_true, y_pred_proba)
         ax.plot(rec, prec, label=f"{class_names[1]} (AP={ap:.3f})")
     else:
-        y_bin = label_binarize(y_true, classes=list(range(n_classes)))
-        for i, cls_name in enumerate(class_names):
-            prec, rec, _ = precision_recall_curve(y_bin[:, i], y_pred_proba[:, i])
-            ap = average_precision_score(y_bin[:, i], y_pred_proba[:, i])
-            ax.plot(rec, prec, label=f"{cls_name} (AP={ap:.3f})")
+        y_bin = label_binarize(y_true, classes=labels_present)
+        for col_idx, class_idx in enumerate(labels_present):
+            prec, rec, _ = precision_recall_curve(y_bin[:, col_idx], y_pred_proba[:, class_idx])
+            ap = average_precision_score(y_bin[:, col_idx], y_pred_proba[:, class_idx])
+            ax.plot(rec, prec, label=f"{class_names[class_idx]} (AP={ap:.3f})")
 
     ax.set(xlabel="Recall", ylabel="Precision", title="Precision-Recall curves", xlim=[0, 1], ylim=[0, 1])
     ax.legend(loc="lower left", fontsize=8)
