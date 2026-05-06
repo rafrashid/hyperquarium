@@ -28,7 +28,7 @@ from data.loader import (
     compute_sample_weights, make_dmatrix, save_split_metadata,
 )
 from evaluation.evaluator import run_evaluation
-from features.shap_analysis import run_shap_analysis, compare_shap_across_spectra
+from features.shap_analysis import run_shap_analysis, compare_shap_across_spectra, plot_pca_tsne
 from models.trainer import (
     build_params, train_model, save_model, save_training_metadata, load_model,
 )
@@ -135,6 +135,21 @@ def run_one(
             n_classes=lvl_cfg.n_classes,
             cfg=SHAP_CFG,
             out_dir=out_dir,
+        )
+
+        # PCA → t-SNE on leaf embeddings
+        from evaluation.evaluator import predict_leaf
+        dleaf = make_dmatrix(shap_df, feature_cols, shap_y, ref=False)
+        leaves = predict_leaf(booster, dleaf)
+        plot_pca_tsne(
+            embedding_matrix=leaves,
+            y=shap_y,
+            le=le,
+            turf_algae_class=TURF_ALGAE_CLASS,
+            sample_size=SHAP_CFG.shap_sample_size or 10_000,
+            random_seed=SHAP_CFG.random_seed,
+            out_dir=out_dir,
+            title_suffix=f"spectra {spectra} — level {level}",
         )
 
     logger.info(f"Completed run: {run_id}")

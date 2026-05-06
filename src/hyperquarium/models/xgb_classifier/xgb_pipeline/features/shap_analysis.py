@@ -411,3 +411,130 @@ def run_shap_analysis(
     )
 
     return shap_vals, importance
+
+
+# ---------------------------------------------------------------------------
+# Dimensionality reduction — PCA → t-SNE
+# ---------------------------------------------------------------------------
+
+def plot_pca_tsne(
+        embedding_matrix: np.ndarray,
+        y: np.ndarray,
+        le: LabelEncoder,
+        turf_algae_class: str = TURF_ALGAE_CLASS,
+        pca_components: int = 50,
+        sample_size: int = 10_000,
+        random_seed: int = 42,
+        out_dir: Path | None = None,
+        title_suffix: str = "",
+) -> None:
+    """
+    Produces a PCA → t-SNE 2D scatter plot coloured by class.
+    PCA first reduces to pca_components dimensions; t-SNE then projects to 2D.
+    This two-step approach is faster and more stable than running t-SNE on raw
+    high-dimensional input (leaf embeddings or SHAP values).
+
+    Turf algae points are plotted on top with a larger marker and distinct edge
+    so their overlap with other classes is immediately visible.
+
+    Saves: pca_tsne.png and pca_tsne_data.csv (2D coordinates + labels).
+
+    Args:
+        embedding_matrix: Input matrix (n_samples, n_features).
+                          Typically leaf embeddings (pred_leaf) or SHAP values.
+        y:                Integer-encoded true labels.
+        le:               Fitted LabelEncoder.
+        turf_algae_class: Class name for turf algae — plotted on top.
+        pca_components:   Number of PCA components before t-SNE (default 50).
+                          Capped automatically if n_features < pca_components.
+        sample_size:      Max rows to use — subsampled if dataset is larger.
+        random_seed:      Random seed for reproducibility.
+        out_dir:          Output directory.
+        title_suffix:     Appended to plot title e.g. "spectra A — level 3".
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.manifold import TSNE
+
+    class_names = list(le.classes_)
+    rng = np.random.default_rng(random_seed)
+
+    # Subsample if needed
+    n = len(embedding_matrix)
+    if n > sample_size:
+        idx = rng.choice(n, sample_size, replace=False)
+        X = embedding_matrix[idx]
+        y_s = y[idx]
+        logger.info(f"PCA→t-SNE subsampled to {sample_size:,} rows from {n:,}")
+    else:
+        X, y_s = embedding_matrix, y
+        logger.info(f"PCA→t-SNE using all {n:,} rows")
+
+    # Step 1 — PCA
+    n_components = min(pca_components, X.shape[1], X.shape[0])
+    logger.info(f"PCA: {X.shape[1]} → {n_components} components")
+    pca = PCA(n_components=n_components, random_state=random_seed)
+    X_pca = pca.fit_transform(X)
+    var_explained = pca.explained_variance_ratio_.sum()
+    logger.info(f"PCA variance explained: {var_explained:.1%}")
+
+    # Step 2 — t-SNE
+    logger.info("Running t-SNE (this may take a few minutes on large samples)...")
+    tsne = TSNE(
+        n_components=2,
+        perplexity=min(30, len(X_pca) - 1),
+        random_state=random_seed,
+        n_jobs=-1,
+    )
+    X_2d = tsne.fit_transform(X_pca)
+    logger.info("t-SNE complete")
+
+    # Save 2D coordinates
+    if out_dir is not None:
+        coords_df = pd.DataFrame({
+            "tsne_1": X_2d[:, 0],
+            "tsne_2": X_2d[:, 1],
+            "class": le.inverse_transform(y_s),
+        })
+        save_csv(coords_df, out_dir / "pca_tsne_data.csv", index=False)
+
+    # Colour palette — one colour per class, turf algae always last (on top)
+    # Uses matplotlib's tab10; turf algae gets a bold distinct colour
+    labels = le.inverse_transform(y_s)
+    other_cls = [c for c in class_names if c != turf_algae_class]
+    plot_order = other_cls + ([turf_algae_class] if turf_algae_class in class_names else [])
+
+    cmap = plt.cm.get_cmap("tab10", len(plot_order))
+    colours = {cls: cmap(i) for i, cls in enumerate(plot_order)}
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    for cls in plot_order:
+        mask = labels == cls
+        is_turf = cls == turf_algae_class
+        ax.scatter(
+            X_2d[mask, 0], X_2d[mask, 1],
+            c=[colours[cls]],
+            label=f"{cls} (n={mask.sum():,})",
+            s=18 if is_turf else 8,
+            alpha=0.85 if is_turf else 0.35,
+            linewidths=0.6 if is_turf else 0,
+            edgecolors="white" if is_turf else "none",
+            rasterized=True,
+            zorder=10 if is_turf else 1,
+        )
+
+    title = f"PCA → t-SNE — leaf embeddings"
+    if title_suffix:
+        title += f"\n{title_suffix}"
+    title += f"\n(PCA {n_components} components, {var_explained:.0%} variance explained)"
+
+    ax.set(title=title, xlabel="t-SNE 1", ylabel="t-SNE 2")
+    ax.legend(fontsize=8, markerscale=1.5, framealpha=0.7,
+              loc="best", title="Class", title_fontsize=8)
+    ax.grid(True, alpha=0.2)
+    fig.tight_layout()
+
+    if out_dir is not None:
+        save_figure(fig, out_dir / "pca_tsne.png", dpi=150)
+    else:
+        plt.close(fig)
