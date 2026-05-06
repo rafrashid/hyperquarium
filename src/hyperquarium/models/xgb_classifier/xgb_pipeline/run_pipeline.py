@@ -76,9 +76,9 @@ def run_one(
 
     # ---- DMatrix ------------------------------------------------------
     sample_weight = compute_sample_weights(y_train) if weighted else None
-    dtrain = make_dmatrix(train_df, feature_cols, y_train, sample_weight)
-    dval = make_dmatrix(val_df, feature_cols, y_val)
-    dtest = make_dmatrix(test_df, feature_cols, y_test)
+    dtrain = make_dmatrix(train_df, feature_cols, y_train, sample_weight, ref=None)
+    dval = make_dmatrix(val_df, feature_cols, y_val, ref=dtrain)
+    dtest = make_dmatrix(test_df, feature_cols, y_test, ref=dtrain)
 
     # ---- Train --------------------------------------------------------
     if stage in ("train", "all"):
@@ -123,7 +123,7 @@ def run_one(
             shap_df = test_df
             shap_y = y_test
 
-        dshap = make_dmatrix(shap_df, feature_cols, shap_y)
+        dshap = make_dmatrix(shap_df, feature_cols, shap_y, ref=False)
         X_shap = shap_df[feature_cols].values
 
         run_shap_analysis(

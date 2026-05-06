@@ -413,29 +413,42 @@ def make_dmatrix(
         feature_cols: list[str],
         y: np.ndarray,
         sample_weight: np.ndarray | None = None,
-        use_quantile: bool = True,
+        ref: xgb.QuantileDMatrix | None = None,
 ) -> xgb.DMatrix | xgb.QuantileDMatrix:
     """
     Creates a DMatrix or QuantileDMatrix from a DataFrame.
-    QuantileDMatrix is preferred at scale — more memory-efficient with tree_method='hist'.
+
+    XGBoost requires that val/test QuantileDMatrices are built with ref=dtrain
+    so they share the same quantile cuts. Omitting ref raises:
+      ValueError: Training dataset should be used as a reference...
 
     Args:
         df:            DataFrame containing feature columns.
         feature_cols:  Feature column names to use.
         y:             Integer-encoded label array.
-        sample_weight: Optional per-sample weights.
-        use_quantile:  If True, returns QuantileDMatrix (default; recommended).
+        sample_weight: Optional per-sample weights (training only).
+        ref:           Reference QuantileDMatrix for val/test sets.
+                       None  -> new QuantileDMatrix (use for train).
+                       False -> plain DMatrix (use for SHAP subsamples).
+                       dtrain -> referenced QuantileDMatrix (use for val/test).
 
     Returns:
-        XGBoost DMatrix or QuantileDMatrix.
+        QuantileDMatrix (train/val/test) or DMatrix (SHAP subsamples).
     """
     X = df[feature_cols].values
-    cls = xgb.QuantileDMatrix if use_quantile else xgb.DMatrix
-    dm = cls(X, label=y, weight=sample_weight, feature_names=feature_cols)
-    logger.info(
-        f"Created {'Quantile' if use_quantile else ''}DMatrix — "
-        f"shape: ({dm.num_row():,}, {dm.num_col()})"
-    )
+
+    if ref is False:
+        dm = xgb.DMatrix(X, label=y, feature_names=feature_cols)
+        label = "DMatrix"
+    elif ref is None:
+        dm = xgb.QuantileDMatrix(X, label=y, weight=sample_weight,
+                                 feature_names=feature_cols)
+        label = "QuantileDMatrix (train)"
+    else:
+        dm = xgb.QuantileDMatrix(X, label=y, ref=ref, feature_names=feature_cols)
+        label = "QuantileDMatrix (ref)"
+
+    logger.info(f"Created {label} — shape: ({dm.num_row():,}, {dm.num_col()})")
     return dm
 
 
