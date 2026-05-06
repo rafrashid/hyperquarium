@@ -134,15 +134,23 @@ def compute_metrics(
 
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
-    # Average precision (AUC-PR) — only for classes present in y_true
+    # Average precision (AUC-PR) — only for classes present in y_true.
+    # y_pred_proba columns are indexed 0..trained_n_classes-1 (from the booster),
+    # so we index by the original class integer (labels_present[i]), not by i.
     if n_classes_present == 2 and len(class_names) == 2:
         ap_scores = {class_names[1]: average_precision_score(y_true, y_pred_proba)}
     else:
+        trained_n_classes = y_pred_proba.shape[1] if y_pred_proba.ndim == 2 else n_classes_present
         y_bin = label_binarize(y_true, classes=labels_present)
-        ap_scores = {
-            names_present[i]: average_precision_score(y_bin[:, i], y_pred_proba[:, labels_present[i]])
-            for i in range(n_classes_present)
-        }
+        ap_scores = {}
+        for i, class_idx in enumerate(labels_present):
+            if class_idx < trained_n_classes:
+                ap_scores[names_present[i]] = average_precision_score(
+                    y_bin[:, i], y_pred_proba[:, class_idx]
+                )
+            else:
+                logger.warning(f"Skipping AUC-PR for '{names_present[i]}' — class index {class_idx} "
+                               f"out of range for proba array with {trained_n_classes} columns.")
 
     metrics = {
         "macro_f1": round(macro_f1, 5),
