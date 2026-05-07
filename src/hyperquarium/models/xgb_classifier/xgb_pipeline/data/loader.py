@@ -18,7 +18,7 @@ from config.config import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from utils.io import save_json, load_dataframe, load_spectra_file, save_dataframe
+from utils.io import save_csv, save_json, load_dataframe, load_spectra_file, save_dataframe
 
 logger = logging.getLogger(__name__)
 
