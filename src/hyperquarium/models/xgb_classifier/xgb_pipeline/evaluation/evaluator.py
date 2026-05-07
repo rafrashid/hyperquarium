@@ -281,33 +281,44 @@ def plot_pr_curves(
 
 def plot_learning_curve(
         evals_result: dict,
-        eval_metric: str,
+        eval_metric: str | list[str],
         out_dir: Path,
 ) -> None:
     """
     Plots train vs validation metric per boosting round (from evals_result).
-    Used to detect overfitting and confirm early stopping point.
+    If eval_metric is a list, plots one panel per metric (e.g. mlogloss + merror).
+    Early stopping target is always the last metric in the list.
 
     Args:
         evals_result: Dict returned by xgb.train() via evals_result parameter.
-        eval_metric:  Metric name (e.g. 'mlogloss', 'aucpr').
+        eval_metric:  Metric name or list of metric names.
         out_dir:      Output directory.
     """
-    train_vals = evals_result.get("train", {}).get(eval_metric, [])
-    val_vals = evals_result.get("val", {}).get(eval_metric, [])
+    # Normalise to list
+    metrics = [eval_metric] if isinstance(eval_metric, str) else eval_metric
+    n = len(metrics)
 
-    if not train_vals:
-        logger.warning("No evals_result data found — skipping learning curve plot.")
-        return
+    fig, axes = plt.subplots(1, n, figsize=(9 * n, 4), squeeze=False)
 
-    rounds = np.arange(1, len(train_vals) + 1)
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.plot(rounds, train_vals, label="Train", linewidth=1.2)
-    ax.plot(rounds, val_vals, label="Validation", linewidth=1.2)
-    ax.axvline(np.argmin(val_vals) + 1, color="red", linestyle="--", linewidth=1, label="Best round")
-    ax.set(xlabel="Boosting round", ylabel=eval_metric, title=f"Learning curve — {eval_metric}")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    for ax, metric in zip(axes[0], metrics):
+        train_vals = evals_result.get("train", {}).get(metric, [])
+        val_vals = evals_result.get("val", {}).get(metric, [])
+
+        if not train_vals:
+            logger.warning(f"No evals_result data for metric '{metric}' — skipping.")
+            continue
+
+        rounds = np.arange(1, len(train_vals) + 1)
+        best_round = np.argmin(val_vals) + 1
+        ax.plot(rounds, train_vals, label="Train", linewidth=1.2)
+        ax.plot(rounds, val_vals, label="Validation", linewidth=1.2)
+        ax.axvline(best_round, color="red", linestyle="--", linewidth=1,
+                   label=f"Best round ({best_round})")
+        ax.set(xlabel="Boosting round", ylabel=metric,
+               title=f"Learning curve — {metric}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
     fig.tight_layout()
     save_figure(fig, out_dir / "learning_curve.png")
 
@@ -381,6 +392,80 @@ def find_boundary_samples(
     return flagged
 
 
+def plot_confusion_matrix_level2_from_level4(
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        le: LabelEncoder,
+        out_dir: Path,
+) -> None:
+    """
+    For Level 4 (ROI-level) models only.
+    Recovers Level 2 class labels by stripping the '_ROI_NNN' suffix from
+    Level 4 predictions and true labels, then plots a confusion matrix at
+    the Level 2 granularity — no re-prediction needed.
+
+    This allows direct comparison with the Level 2 model confusion matrix.
+
+    Saves: confusion_matrix_level2_from_level4.png
+           confusion_matrix_level2_from_level4_counts.csv
+
+    Args:
+        y_true:  True integer labels (Level 4 encoded).
+        y_pred:  Predicted integer labels (Level 4 encoded).
+        le:      Fitted LabelEncoder for Level 4 labels.
+        out_dir: Output directory.
+    """
+    import re
+
+    # Decode integer labels back to Level 4 strings
+    true_l4 = le.inverse_transform(y_true)
+    pred_l4 = le.inverse_transform(y_pred)
+
+    # Strip '_ROI_NNN' suffix to recover Level 2 class
+    # e.g. turf_algae_ROI_042 -> turf_algae
+    roi_pattern = re.compile(r"_ROI_\d+$")
+    true_l2 = np.array([roi_pattern.sub("", lbl) for lbl in true_l4])
+    pred_l2 = np.array([roi_pattern.sub("", lbl) for lbl in pred_l4])
+
+    # Unique Level 2 classes in sorted order
+    class_names = sorted(set(true_l2) | set(pred_l2))
+
+    # Build confusion matrix
+    from sklearn.metrics import confusion_matrix as sk_cm
+    cm = sk_cm(true_l2, pred_l2, labels=class_names)
+
+    # Save raw counts
+    cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
+    save_csv(cm_df, out_dir / "confusion_matrix_level2_from_level4_counts.csv")
+
+    # Normalise by true label (rows sum to 1)
+    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+
+    fig, ax = plt.subplots(figsize=(max(6, len(class_names)), max(5, len(class_names) - 1)))
+    im = ax.imshow(cm_norm, interpolation="nearest", cmap="Blues", vmin=0, vmax=1)
+    plt.colorbar(im, ax=ax)
+
+    ax.set(
+        xticks=np.arange(len(class_names)),
+        yticks=np.arange(len(class_names)),
+        xticklabels=class_names,
+        yticklabels=class_names,
+        xlabel="Predicted (Level 2, recovered)",
+        ylabel="True (Level 2, recovered)",
+        title="Confusion matrix — Level 4 predictions mapped back to Level 2",
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+    thresh = cm_norm.max() / 2.0
+    for i in range(len(class_names)):
+        for j in range(len(class_names)):
+            ax.text(j, i, f"{cm_norm[i, j]:.2f}", ha="center", va="center",
+                    color="white" if cm_norm[i, j] > thresh else "black", fontsize=9)
+
+    fig.tight_layout()
+    save_figure(fig, out_dir / "confusion_matrix_level2_from_level4.png")
+    logger.info("Level 2 confusion matrix (from Level 4 predictions) saved.")
+
 # ---------------------------------------------------------------------------
 # Full evaluation run
 # ---------------------------------------------------------------------------
@@ -423,5 +508,9 @@ def run_evaluation(
     plot_pr_curves(y_test, y_pred_proba, le, n_classes, out_dir)
     plot_learning_curve(evals_result, eval_metric, out_dir)
     find_boundary_samples(y_test, y_pred_proba, le, n_classes, turf_algae_class, out_dir)
+
+    # Level 4 only: additional confusion matrix mapped back to Level 2
+    if n_classes > 50:  # Heuristic: Level 4 always has many more classes than other levels
+        plot_confusion_matrix_level2_from_level4(y_test, y_pred, le, out_dir)
 
     return metrics

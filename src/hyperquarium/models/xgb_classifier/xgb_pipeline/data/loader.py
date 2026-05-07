@@ -14,6 +14,7 @@ from config.config import (
     SplitConfig, LABEL_COLUMNS, SPLIT,
     RAW_LABEL_COLUMN, LABEL_MAPPING_FILE, LABEL_MAPPING_DATASET,
     LABEL_MAPPING_LEVEL0_COL, METADATA_COLUMNS, classify_column,
+    ROI_ID_COLUMN,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -181,6 +182,68 @@ def remap_labels(
         logger.info(f"Level {level} ({col}) class distribution after remapping:")
         for cls, n in counts.items():
             logger.info(f"    {cls:<30} {n:>8,}  ({n / total * 100:.2f}%)")
+
+    # Construct Level 4 label: {level2_label}_ROI_{running_count}
+    # Running count restarts from 001 for each Level 2 class, so labels look like:
+    #   turf_algae_ROI_001, turf_algae_ROI_002, ..., coral_ROI_001, coral_ROI_002, ...
+    # This makes labels human-readable and comparable within the Level 2 hierarchy.
+    # The mapping from original roi_ID to the new label is exported as a CSV.
+    level1_col = LABEL_COLUMNS[1]
+    level2_col = LABEL_COLUMNS[2]
+    level4_col = LABEL_COLUMNS[4]
+
+    if ROI_ID_COLUMN in out.columns:
+        # Build roi_ID -> level4_label mapping
+        # Group by Level 2 class, assign running count per ROI within that class
+        roi_map = (
+            out[[level2_col, ROI_ID_COLUMN]]
+            .drop_duplicates()
+            .sort_values([level2_col, ROI_ID_COLUMN])
+        )
+        roi_map["_rank"] = (
+            roi_map.groupby(level2_col)[ROI_ID_COLUMN]
+            .transform(lambda x: (pd.factorize(x)[0] + 1))
+        )
+        roi_map[level4_col] = (
+                roi_map[level2_col].astype(str)
+                + "_ROI_"
+                + roi_map["_rank"].apply(lambda n: f"{n:03d}")
+        )
+        roi_map = roi_map.drop(columns="_rank")
+
+        # Also attach Level 1 for the full mapping table
+        level1_per_roi = (
+            out[[ROI_ID_COLUMN, level1_col]]
+            .drop_duplicates()
+        )
+        roi_map = roi_map.merge(level1_per_roi, on=ROI_ID_COLUMN, how="left")
+
+        # Apply to DataFrame
+        id_to_label = dict(zip(roi_map[ROI_ID_COLUMN], roi_map[level4_col]))
+        out[level4_col] = out[ROI_ID_COLUMN].map(id_to_label)
+
+        n_rois = out[level4_col].nunique()
+        logger.info(
+            f"Level 4 labels constructed — {n_rois} unique ROIs "
+            f"(format: {{level2_label}}_ROI_NNN)"
+        )
+
+        # Log ROI count per Level 2 class
+        roi_per_class = out.groupby(level2_col)[level4_col].nunique()
+        for cls, n in roi_per_class.sort_index().items():
+            logger.info(f"    {cls:<30} {n:>4} ROIs")
+
+        # Store mapping table on the DataFrame for export by the caller
+        # Columns: roi_ID, label_level1, label_level2, label_level4
+        out._roi_mapping = roi_map[[
+            ROI_ID_COLUMN, level1_col, level2_col, level4_col
+        ]].sort_values([level2_col, level4_col]).reset_index(drop=True)
+
+    else:
+        logger.warning(
+            f"Column '{ROI_ID_COLUMN}' not found — Level 4 labels not constructed. "
+            f"Check ROI_ID_COLUMN in config.py."
+        )
 
     logger.info(
         f"Label remapping complete — {len(out):,} rows retained "
@@ -455,6 +518,28 @@ def make_dmatrix(
 # ---------------------------------------------------------------------------
 # Metadata
 # ---------------------------------------------------------------------------
+
+def save_roi_mapping(df: pd.DataFrame, out_dir: Path) -> None:
+    """
+    Exports the ROI mapping table produced by remap_labels() to CSV.
+    Columns: roi_ID, label_level1, label_level2, label_level4
+
+    This table is the key reference for interpreting Level 4 model outputs —
+    it links the human-readable running-count label back to the original roi_ID
+    and its position in the Level 2 hierarchy.
+
+    Args:
+        df:      DataFrame returned by remap_labels() (must have _roi_mapping attr).
+        out_dir: Output directory — saved as roi_label_mapping.csv.
+    """
+    mapping = getattr(df, "_roi_mapping", None)
+    if mapping is None:
+        logger.warning("No ROI mapping found on DataFrame — was remap_labels() called?")
+        return
+    save_csv(mapping, out_dir / "roi_label_mapping.csv", index=False)
+    logger.info(f"ROI label mapping exported: {out_dir / 'roi_label_mapping.csv'} "
+                f"({len(mapping)} ROIs)")
+
 
 def save_split_metadata(
         train_df: pd.DataFrame,

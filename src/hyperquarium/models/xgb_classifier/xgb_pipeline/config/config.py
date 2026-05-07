@@ -64,11 +64,17 @@ LABEL_MAPPING_LEVEL0_COL = "Level_0"
 LABEL_MAPPING_DATASET = "pilot"
 
 # Label columns produced after remapping (added to the DataFrame by remap_labels())
+# Level 4 is not in the mapping file — it is constructed by remap_labels()
+# from the Level 2 label + roi_ID: e.g. turf_algae_20250922-094548-12
 LABEL_COLUMNS = {
     1: "label_level1",
     2: "label_level2",
     3: "label_level3",
+    4: "label_level4",
 }
+
+# Column in the raw data used to construct Level 4 labels
+ROI_ID_COLUMN = "roi_ID"
 
 # Turf algae class name — must match exactly the value in Level_3 of the mapping file
 TURF_ALGAE_CLASS = "turf_algae"
@@ -203,7 +209,7 @@ class LevelConfig:
     level: int
     n_classes: int
     objective: str
-    eval_metric: str
+    eval_metric: str | list[str]  # Single metric or list; early stopping watches last
     run_unweighted: bool = False  # If True, also trains without class weights
 
 
@@ -221,6 +227,18 @@ LEVEL_CONFIGS = {
         level=1, n_classes=8,
         objective="multi:softprob", eval_metric="mlogloss",
     ),
+    # Level 4: ROI-level classification within Level 2 classes.
+    # Each ROI becomes its own class: {level2_label}_{roi_ID}
+    # e.g. turf_algae_20250922-094548-12
+    # n_classes is set dynamically in remap_labels() — placeholder here.
+    # Purpose: quantify within-class vs between-class spectral variability,
+    #          particularly whether turf algae ROIs are more variable among
+    #          themselves than relative to other classes.
+    4: LevelConfig(
+        level=4, n_classes=-1,  # Derived at runtime from unique ROIs in data
+        objective="multi:softprob",
+        eval_metric=["mlogloss", "merror"],  # Early stopping on mlogloss (last)
+    ),
 }
 
 
@@ -237,9 +255,10 @@ class SHAPConfig:
 
 SHAP_CFG = SHAPConfig()
 
+
 # ---------------------------------------------------------------------------
 # Pipeline control
 # ---------------------------------------------------------------------------
 
 SPECTRA_TYPES = ["A", "B", "C", "D"]
-LEVELS = [3, 2, 1]  # Coarse to fine
+LEVELS = [3, 2, 1, 4]  # Coarse to fine; 4 = ROI-level within Level 2

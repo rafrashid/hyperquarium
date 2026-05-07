@@ -42,7 +42,7 @@ def build_params(xgb_cfg: XGBConfig, level_cfg: LevelConfig) -> dict:
         "lambda": xgb_cfg.reg_lambda,
         "alpha": xgb_cfg.reg_alpha,
         "objective": level_cfg.objective,
-        "eval_metric": level_cfg.eval_metric,
+        "eval_metric": level_cfg.eval_metric,  # str or list[str]
         "seed": xgb_cfg.seed,
     }
     if level_cfg.n_classes > 2:
@@ -139,9 +139,14 @@ def save_training_metadata(
         out_dir:      Output directory.
         weighted:     Whether sample weights were used.
     """
+    # If eval_metric is a list, best_score corresponds to the last metric (early stopping target)
+    eval_metric = params.get("eval_metric", "unknown")
+    primary_metric = eval_metric[-1] if isinstance(eval_metric, list) else eval_metric
+
     meta = {
         "best_iteration": booster.best_iteration,
         "best_score": booster.best_score,
+        "primary_metric": primary_metric,
         "num_features": booster.num_features(),
         "weighted": weighted,
         "class_mapping": {str(i): cls for i, cls in enumerate(le.classes_)},
