@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -25,14 +26,21 @@ DATA_DIR = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "outputs"
 LOG_DIR = OUTPUT_DIR / "logs"
 
-# Input data files — one per spectra type, all sharing the same spatial columns.
-# Supports both .parquet and .csv — set extension to match your files.
+# Pre-built input tables — one parquet file per spectra type.
+# Each file contains: spectral features + GLCM + spectral diversity + metadata + label.
+# Spatial features (GLCM, sdiv) are computed from the corresponding spectra:
+#   A: reflectance spectra        | GLCM + sdiv from A
+#   B: 2nd derivative of A        | GLCM + sdiv from A
+#   C: L2-norm of A               | GLCM + sdiv from C
+#   D: 2nd derivative of C        | GLCM + sdiv from C
+# These files are assumed to exist on disk already — no generation step in the pipeline.
 SPECTRA_FILES = {
-    "A": DATA_DIR / "spectra_A.parquet",  # Reflectance
-    "B": DATA_DIR / "spectra_B.parquet",  # 2nd derivative of A
-    "C": DATA_DIR / "spectra_C.parquet",  # L2-normalisation of A
-    "D": DATA_DIR / "spectra_D.parquet",  # 2nd derivative of C
+    "A": DATA_DIR / "spectra_A.parquet",
+    "B": DATA_DIR / "spectra_B.parquet",
+    "C": DATA_DIR / "spectra_C.parquet",
+    "D": DATA_DIR / "spectra_D.parquet",
 }
+
 
 # ---------------------------------------------------------------------------
 # Label mapping
@@ -64,6 +72,7 @@ LABEL_COLUMNS = {
 
 # Turf algae class name — must match exactly the value in Level_3 of the mapping file
 TURF_ALGAE_CLASS = "turf_algae"
+
 
 # ---------------------------------------------------------------------------
 # Feature column identification

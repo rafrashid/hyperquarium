@@ -425,7 +425,7 @@ def plot_pca_tsne(
         pca_components: int = 50,
         sample_size: int = 10_000,
         random_seed: int = 42,
-        out_dir: Path | None = None,
+        out_dir: Path | str | None = None,
         title_suffix: str = "",
 ) -> None:
     """
@@ -454,6 +454,9 @@ def plot_pca_tsne(
     """
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
+
+    if out_dir is not None:
+        out_dir = Path(out_dir)
 
     class_names = list(le.classes_)
     rng = np.random.default_rng(random_seed)
