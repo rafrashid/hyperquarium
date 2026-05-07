@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("data_path", type=Path,
                         help="Path to spectra parquet/CSV file")
-    parser.add_argument("level", type=int, choices=[1, 2, 3],
+    parser.add_argument("level", type=int, choices=[1, 2, 3, 4],
                         help="Hierarchy level (1, 2, or 3)")
     parser.add_argument("weighted", type=str,
                         help="Apply sample weights: true / false")
