@@ -4,9 +4,11 @@ from src.hyperquarium.data import my_utils, processing
 from src.hyperquarium.data.resampling import *
 
 selected_block = ['11x11', '7x7', '3x3', '1x1']
+exclude_labels = ['not_turf_algae']
 pilot_roi_blocks = pd.read_csv("data/interim/01_pilot/03A_norm_refl-blocks.csv")
 pilot_roi_blocks = pilot_roi_blocks.loc[pilot_roi_blocks['resampling_method'] == 'bilinear']
 pilot_roi_blocks = pilot_roi_blocks.loc[pilot_roi_blocks['block_grid'].isin(selected_block)]
+pilot_roi_blocks = pilot_roi_blocks.loc[~pilot_roi_blocks['label'].isin(exclude_labels)]
 PILOT_BLOCKS = pilot_roi_blocks['filestem'].tolist()
 PILOT_LABELS = pilot_roi_blocks['label'].tolist()
 PILOT_ROIS = pilot_roi_blocks['roi_ID'].tolist()
@@ -633,6 +635,10 @@ rule pilot_blocks_extract:
         #     roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
         #         label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_ID=PILOT_ROIS),
         #     refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        expand("data/interim/01_pilot/{refl_type}/04C_spec_diversity/{roi_path}_specdiv/",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
+                label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_ID=PILOT_ROIS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
         expand("data/interim/01_pilot/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
             roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
                 label=PILOT_LABELS,roi_scan_ID=PILOT_SCANS,roi_ID=PILOT_ROIS),

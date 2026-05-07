@@ -52,9 +52,9 @@ rule rc_blocks_summarised:
 
 rule rc_L2norm_refl:
     input:
-        nc_file="data/interim/03_reefcompare/{refl_type}/{label}/{roi_scan_ID}/{roi_block}.nc",
+        nc_file="data/interim/03_reefcompare/03A_norm_refl/{label}/{roi_scan_ID}/{roi_block}.nc",
     output:
-        nc_file="data/interim/03_reefcompare/{refl_type}_2nd_dx/{label}/{roi_scan_ID}/{roi_block}.nc"
+        nc_file="data/interim/03_reefcompare/03B_L2_norm_refl/{label}/{roi_scan_ID}/{roi_block}.nc"
     params:
         band_start=7,# 421.3802 nm
         band_end=141  # 709.5606 nm
@@ -70,7 +70,6 @@ rule rc_L2norm_refl:
 
 rule rc_second_deriv:
     input:
-        check_prev_rule="data/interim/03_reefcompare/{refl_type}/{label}/{roi_scan_ID}/{roi_block}.png",
         nc_file="data/interim/03_reefcompare/{refl_type}/{label}/{roi_scan_ID}/{roi_block}.nc",
     output:
         nc_file="data/interim/03_reefcompare/{refl_type}_2nd_dx/{label}/{roi_scan_ID}/{roi_block}.nc"
@@ -92,6 +91,7 @@ rule rc_second_deriv:
         second_deriv.attrs['spectrum_type'] = 'second_deriv'
         second_deriv.to_netcdf(output.nc_file)
 
+        del mean_spectrum, clean_spectra, n_clean_pixels
         gc.collect()
 
 rule rc_plot_spectrum:

@@ -183,10 +183,69 @@ rule rc_compile_normrefl_summary:
         df_out['filestem'] = df_out['roi_ID'] + "_" + df_out['resampling_method'] + "-" + df_out['block_grid']
         df_out.to_csv(output.csv_file,index=True)
 
+rule create_rgb_refl_blocks_reefcompare:
+    input:
+        check_prev_rule="data/interim/03_reefcompare/03A_norm_refl-blocks.csv",
+        ref_pngfile="data/interim/Calibration/RGB_ref/03A_norm_refl/20250731-094745-04--res_target.png",
+        # Recursively find all txt files in results directory
+        nc_files=lambda wildcards: list(Path("data/interim/03_reefcompare/03A_norm_refl").rglob("*/*_bilinear-1x1.nc"))
+    output:
+        json_file="data/interim/03_reefcompare/03A_norm_refl-RGB_images.json"
+    run:
+        import json
+        from PIL import Image, ImageEnhance
+        from src.hyperquarium.viz import images
+        from pathlib import Path
+
+        json_records = []
+        for file in input.nc_files:
+            # Check if correct type of .nc file
+            if file.endswith("trio.nc"):
+                print(f"Skipping '{filestem}': Not a reflectance spectrum dataset!")
+                continue
+
+            fpath = Path(file)
+            filestem = str(fpath.stem)
+
+            data = xr.load_dataarray(fpath)
+            print(f"Loading {fpath}")
+
+            # Check if empty before processing
+            if data.sizes['line'] == 0 or data.sizes['sample'] == 0:
+                print(f"Skipping '{filestem}': No valid blocks (shape: {data.shape})")
+                continue
+
+            record = {filestem: str(fpath)}
+            json_records.append(record)
+
+            ref = images.load_rgb_image(input.ref_pngfile)
+
+            ######################################################################
+
+            rgb = images.create_rgb_from_bands(data)  # RGB with colour matching
+            # Create PIL Image
+            image = Image.fromarray(rgb,'RGB')
+
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.2)  # Boost contrast by 20%
+
+            # Save image
+            image.save(fpath.parent.joinpath(f"{filestem}_RGB.png"))
+
+            ######################################################################
+
+            matched = images.apply_color_matching_to_rgb(rgb,ref,method='histogram')
+            matched = images.upscale_rgb_to_original(matched,data,method='nearest')
+            images.save_rgb_array(matched,fpath.parent.joinpath(f"{filestem}_RGB_matched.png"))
+
+        print(f'Saved {len(json_records)} RGB images!')
+        # Open the file in write mode ('w') and use json.dump()
+        with open(output.json_file,'w',encoding='utf-8') as f:
+            json.dump(json_records,f,indent=4)
+
 rule reefcompare_data_prep:
     input:
-        #expand("data/interim/03_reefcompare/03_reflectance/{label}/{roi_scan_ID}/{roi}_blocks.csv", zip, roi_scan_ID=RC_ROI_SCANS, roi=RC_ROI_IDs, label=RC_LABELS),
-        expand("data/interim/03_reefcompare/03A_norm_refl/{label}/{roi_scan_ID}/{roi}_spectra.csv",zip,roi_scan_ID=RC_ROI_SCANS,roi=RC_ROI_IDs,label=RC_LABELS),
-        #expand("data/interim/03_reefcompare/03_reflectance/{label}/{roi_scan_ID}/{roi}_spectra.csv",zip, roi_scan_ID=RC_ROI_SCANS, roi=RC_ROI_IDs, label=RC_LABELS),
+        "data/interim/03_reefcompare/03A_norm_refl-RGB_images.json",
+        #expand("data/interim/03_reefcompare/03A_norm_refl/{label}/{roi_scan_ID}/{roi}_spectra.csv",zip,roi_scan_ID=RC_ROI_SCANS,roi=RC_ROI_IDs,label=RC_LABELS),
         #"data/interim/03_reefcompare/03_reflectance-blocks.csv",
-        "data/interim/03_reefcompare/03A_norm_refl-blocks.csv"
+        #"data/interim/03_reefcompare/03A_norm_refl-blocks.csv"

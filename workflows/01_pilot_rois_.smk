@@ -182,7 +182,7 @@ rule compile_normrefl_blocks_summary:
         df_out['filestem'] = df_out['roi_ID'] + "_" + df_out['resampling_method'] + "-" + df_out['block_grid']
         df_out.to_csv(output.csv_file,index=True)
 
-rule create_rgb_refl_blocks:
+rule create_rgb_refl_blocks_pilot:
     input:
         check_prev_rule="data/interim/01_pilot/03A_norm_refl-blocks.csv",
         ref_pngfile="data/interim/Calibration/RGB_ref/03A_norm_refl/20250828-132408-07--plug_ts2_05-RGB_ref.png",
