@@ -177,8 +177,10 @@ def remap_labels(
             {k: v[level_col] for k, v in lookup.items()}
         )
 
-    # Log resulting class distribution at each level
+    # Log resulting class distribution at each level (1, 2, 3 only — level 4 logged separately)
     for level, col in LABEL_COLUMNS.items():
+        if col not in out.columns:
+            continue
         counts = out[col].value_counts().sort_values(ascending=False)
         total = len(out)
         logger.info(f"Level {level} ({col}) class distribution after remapping:")
