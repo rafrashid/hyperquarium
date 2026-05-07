@@ -168,9 +168,11 @@ def remap_labels(
         else:
             raise ValueError(msg)
 
-    # Apply remapping
+    # Apply remapping — only for levels present in the mapping file (1, 2, 3)
+    # Level 4 is constructed separately below from Level 2 label + roi_ID
     out = df.copy()
-    for level_col in LABEL_COLUMNS.values():
+    mapping_level_cols = [LABEL_COLUMNS[l] for l in (1, 2, 3) if l in LABEL_COLUMNS]
+    for level_col in mapping_level_cols:
         out[level_col] = out[raw_label_col].map(
             {k: v[level_col] for k, v in lookup.items()}
         )
