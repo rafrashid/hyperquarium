@@ -3,7 +3,6 @@ from pathlib import Path
 
 from src.hyperquarium.data import my_utils
 from src.hyperquarium.data.resampling import *
-from src.hyperquarium.viz import images
 
 configfile: "workflows/all_ROIs_flat.yml"
 ALL_ROIS = list(config['roi_samples'])
@@ -17,6 +16,14 @@ TS_ROIS = [ROI for ROI in ALL_ROIS
 TS_ROI_IDs = [s.split('--')[0] for s in TS_ROIS]
 TS_LABELS = [s.split('--')[1] for s in TS_ROIS]
 TS_ROI_SCANS = [s[:-3] for s in TS_ROI_IDs]
+
+configfile: "workflows/all_seasim.yml"
+SIM_SCANS = list(config['seasim_scans'])
+SIM_ROIS = [ROI for ROI in ALL_ROIS
+            if any(sub in ROI for sub in SIM_SCANS)]
+SIM_ROI_IDs = [s.split('--')[0] for s in SIM_ROIS]
+SIM_LABELS = [s.split('--')[1] for s in SIM_ROIS]
+SIM_ROI_SCANS = [s[:-3] for s in SIM_ROI_IDs]
 
 #roi_records = pd.read_csv("data/interim/all_ROIs_flat.csv")
 scan_records = pd.read_csv(SCAN_RECORDS_PATH)
@@ -184,16 +191,18 @@ rule ts_compile_normrefl_summary:
         df_out['filestem'] = df_out['roi_ID'] + "_" + df_out['resampling_method'] + "-" + df_out['block_grid']
         df_out.to_csv(output.csv_file,index=True)
 
-rule ts_RGB_refl:
+rule create_rgb_refl_blocks_seasim_ts:
     input:
         check_prev_rule="data/interim/02_seasim_ts/03A_norm_refl-blocks.csv",
-        ref_pngfile="data/interim/Calibration/RGB_ref/03A_norm_refl/20250828-132408-07--plug_ts2_05-RGB_ref.png",
+        ref_pngfile="data/interim/Calibration/RGB_ref/03A_norm_refl/20250731-094745-04--res_target.png",
         # Recursively find all txt files in results directory
-        nc_files=lambda wildcards: list(Path("data/interim/02_seasim_ts/03A_norm_refl").rglob("*/*-*x*.nc"))
+        nc_files=lambda wildcards: list(Path("data/interim/02_seasim_ts/03A_norm_refl").rglob("*/*_bilinear-1x1.nc"))
     output:
         json_file="data/interim/02_seasim_ts/03A_norm_refl-RGB_images.json"
     run:
         import json
+        from PIL import Image, ImageEnhance
+        from src.hyperquarium.viz import images
         from pathlib import Path
 
         json_records = []
@@ -219,10 +228,23 @@ rule ts_RGB_refl:
 
             ref = images.load_rgb_image(input.ref_pngfile)
 
+            ######################################################################
+
             rgb = images.create_rgb_from_bands(data)  # RGB with colour matching
+            # Create PIL Image
+            image = Image.fromarray(rgb,'RGB')
+
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.2)  # Boost contrast by 20%
+
+            # Save image
+            image.save(fpath.parent.joinpath(f"{filestem}_RGB.png"))
+
+            ######################################################################
+
             matched = images.apply_color_matching_to_rgb(rgb,ref,method='histogram')
             matched = images.upscale_rgb_to_original(matched,data,method='nearest')
-            images.save_rgb_array(matched,fpath.parent.joinpath(f"{filestem}.png"))
+            images.save_rgb_array(matched,fpath.parent.joinpath(f"{filestem}_RGB_matched.png"))
 
         print(f'Saved {len(json_records)} RGB images!')
         # Open the file in write mode ('w') and use json.dump()
@@ -276,11 +298,15 @@ rule ts_RGB_refl_animate:
 
 rule timeseries_data_prep:
     input:
-        expand("data/interim/02_seasim_ts/03_reflectance/{label}/{roi_scan_ID}/{roi}_blocks.csv",zip,roi_scan_ID=TS_ROI_SCANS,roi=TS_ROI_IDs,label=TS_LABELS),
-        expand("data/interim/02_seasim_ts/03A_norm_refl/{label}/{roi_scan_ID}/{roi}_spectra.csv",zip,roi_scan_ID=TS_ROI_SCANS,roi=TS_ROI_IDs,label=TS_LABELS),
-        #expand("data/interim/02_seasim_ts/03_reflectance/{label}/{roi_scan_ID}/{roi}_spectra.csv",zip, roi_scan_ID=PILOT_ROI_SCANS, roi=PILOT_ROI_IDs, label=PILOT_LABELS),
+        expand("data/interim/02_seasim_ts/03_reflectance/{label}/{roi_scan_ID}/{roi}_blocks.csv",
+            zip,roi_scan_ID=TS_ROI_SCANS,roi=TS_ROI_IDs,label=TS_LABELS),
+        expand("data/interim/02_seasim_ts/03_reflectance/{label}/{roi_scan_ID}/{roi}_blocks.csv",
+            zip,roi_scan_ID=SIM_ROI_SCANS,roi=SIM_ROI_IDs,label=SIM_LABELS),
+        expand("data/interim/02_seasim_ts/03A_norm_refl/{label}/{roi_scan_ID}/{roi}_spectra.csv",
+            zip,roi_scan_ID=TS_ROI_SCANS,roi=TS_ROI_IDs,label=TS_LABELS),
+        expand("data/interim/02_seasim_ts/03A_norm_refl/{label}/{roi_scan_ID}/{roi}_spectra.csv",
+            zip,roi_scan_ID=SIM_ROI_SCANS,roi=SIM_ROI_IDs,label=SIM_LABELS),
         "data/interim/02_seasim_ts/03_reflectance-blocks.csv",
         "data/interim/02_seasim_ts/03A_norm_refl-blocks.csv",
         "data/interim/02_seasim_ts/03A_norm_refl-RGB_images.json",
         "data/interim/02_seasim_ts/animation"
-    #expand("data/interim/02_seasim_ts/{roi_ID}_resampling.csv",roi_ID=PILOT_ROIS),
