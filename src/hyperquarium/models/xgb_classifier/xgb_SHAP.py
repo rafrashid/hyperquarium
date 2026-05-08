@@ -40,8 +40,8 @@ def parse_args() -> argparse.Namespace:
                         help="Hierarchy level (1, 2, or 3)")
     parser.add_argument("weighted", type=str,
                         help="Apply sample weights: true / false")
-    parser.add_argument("--dataset", type=str, default="pilot",
-                        help="Label mapping dataset filter (default: pilot)")
+    parser.add_argument("--labelset", type=str, default="pilot",
+                        help="Label mapping labelset filter (default: pilot)")
     return parser.parse_args()
 
 
@@ -98,7 +98,7 @@ def main() -> None:
 
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
-    df = remap_labels(df, dataset=args.dataset)
+    df = remap_labels(df, dataset=args.labelset)
 
     # Level 4: derive n_classes dynamically from unique ROIs in data
     if level == 4:
