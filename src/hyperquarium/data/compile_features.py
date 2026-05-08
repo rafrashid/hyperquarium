@@ -342,6 +342,9 @@ def compile_roi(roi_id: str, data_dir: Path, output_dir: Path,
         print(f"  [ERROR] Spectrum load failed for {roi_id}: {e}")
         return None
 
+    if spectrum_df is None:
+        return None
+
     # Use (line, sample) as the join key
     df = spectrum_df.copy()
     target_lines = spectrum_df["line"].values
