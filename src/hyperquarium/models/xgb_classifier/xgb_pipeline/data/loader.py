@@ -571,3 +571,85 @@ def save_split_metadata(
         "test_class_counts": test_df[label_col].value_counts().to_dict(),
     }
     save_json(meta, out_dir / "split_metadata.json")
+
+
+# ---------------------------------------------------------------------------
+# ROI-level subsampling
+# ---------------------------------------------------------------------------
+
+def subsample_turf_rois(
+        df: pd.DataFrame,
+        turf_algae_class: str = "turf_algae",
+        random_seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Reduces turf algae ROI count to match the next most abundant Level 2 class.
+    Subsampling is at the ROI level — all rows belonging to selected ROIs are kept.
+    This is a one-time fixed subsample (reproducible via random_seed).
+
+    The ceiling is determined by the largest non-turf Level 2 class ROI count,
+    making the subsampling decision data-driven rather than arbitrary.
+
+    Args:
+        df:               DataFrame after remap_labels() has been called.
+        turf_algae_class: Level 2 label for turf algae.
+        random_seed:      Random seed for reproducibility.
+
+    Returns:
+        Subsampled DataFrame with turf algae ROIs reduced to match ceiling.
+    """
+    level2_col = LABEL_COLUMNS[2]
+    level4_col = LABEL_COLUMNS[4]
+
+    # Use roi_ID directly if Level 4 not yet constructed
+    roi_col = level4_col if level4_col in df.columns else ROI_ID_COLUMN
+
+    if roi_col not in df.columns:
+        raise KeyError(f"ROI column '{roi_col}' not found. Run remap_labels() first.")
+
+    # Count ROIs per Level 2 class
+    roi_counts = (
+        df.groupby(level2_col)[roi_col]
+        .nunique()
+        .sort_values(ascending=False)
+    )
+    logger.info("ROI counts per Level 2 class (before subsampling):")
+    for cls, n in roi_counts.items():
+        logger.info(f"    {cls:<30} {n:>4} ROIs")
+
+    if turf_algae_class not in roi_counts.index:
+        logger.warning(f"'{turf_algae_class}' not found in Level 2 labels — no subsampling applied.")
+        return df
+
+    # Ceiling = largest non-turf ROI count
+    non_turf_counts = roi_counts.drop(turf_algae_class)
+    ceiling = int(non_turf_counts.max())
+    n_turf_rois = int(roi_counts[turf_algae_class])
+
+    if n_turf_rois <= ceiling:
+        logger.info(
+            f"Turf algae ROI count ({n_turf_rois}) already at or below ceiling ({ceiling}) "
+            f"— no subsampling needed."
+        )
+        return df
+
+    # Sample ROIs to keep
+    turf_rois = (
+        df[df[level2_col] == turf_algae_class][roi_col]
+        .unique()
+    )
+    rng = np.random.default_rng(random_seed)
+    selected_rois = rng.choice(turf_rois, size=ceiling, replace=False)
+    selected_set = set(selected_rois)
+
+    # Keep all non-turf rows + only selected turf ROI rows
+    mask = (df[level2_col] != turf_algae_class) | (df[roi_col].isin(selected_set))
+    out = df[mask].copy()
+
+    logger.info(
+        f"Turf algae ROIs subsampled: {n_turf_rois} -> {ceiling} "
+        f"(ceiling = largest non-turf class: '{non_turf_counts.idxmax()}')"
+    )
+    logger.info(f"Rows retained: {len(out):,} of {len(df):,} ({len(out) / len(df) * 100:.1f}%)")
+
+    return out
