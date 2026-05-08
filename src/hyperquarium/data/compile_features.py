@@ -94,7 +94,8 @@ def discover_roi_ids(data_dir: Path, output_dir: Path) -> list[str]:
 # Spectrum
 # ---------------------------------------------------------------------------
 
-def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
+def load_spectrum(roi_id: str, data_dir: Path,
+                  include_labels: list[str] = INCLUDE_LABELS) -> pd.DataFrame:
     """
     Load spectrum DataArray (line, band, sample) and reshape to a DataFrame
     with columns [line, sample, band_0 … band_N] plus metadata from attrs.
@@ -107,9 +108,9 @@ def load_spectrum(roi_id: str, data_dir: Path) -> pd.DataFrame:
     path = data_dir / f"{file_stem(roi_id)}.nc"
     da = xr.open_dataarray(path)
 
-    # --- label check — skip ROI early if label not in INCLUDE_LABELS ---
+    # --- label check — skip ROI early if label not in include_labels ---
     label = da.attrs.get("label")
-    if INCLUDE_LABELS and label not in INCLUDE_LABELS:
+    if include_labels and label not in include_labels:
         print(f"  [SKIP] {roi_id}: label '{label}' not in INCLUDE_LABELS")
         da.close()
         return None
@@ -332,10 +333,11 @@ def load_specdiv(roi_id: str, data_dir: Path,
 # Per-ROI assembly
 # ---------------------------------------------------------------------------
 
-def compile_roi(roi_id: str, data_dir: Path, output_dir: Path) -> pd.DataFrame | None:
+def compile_roi(roi_id: str, data_dir: Path, output_dir: Path,
+                include_labels: list[str] = INCLUDE_LABELS) -> pd.DataFrame | None:
     """Compile all features for a single ROI into a pixel-level DataFrame."""
     try:
-        spectrum_df = load_spectrum(roi_id, data_dir)
+        spectrum_df = load_spectrum(roi_id, data_dir, include_labels=include_labels)
     except Exception as e:
         print(f"  [ERROR] Spectrum load failed for {roi_id}: {e}")
         return None
@@ -379,7 +381,7 @@ def compile_all(
 
     all_dfs = []
     for roi_id in tqdm(roi_ids, desc="Compiling ROIs"):
-        roi_df = compile_roi(roi_id, data_dir, output_dir)
+        roi_df = compile_roi(roi_id, data_dir, output_dir, include_labels=include_labels)
         if roi_df is not None:
             all_dfs.append(roi_df)
 
