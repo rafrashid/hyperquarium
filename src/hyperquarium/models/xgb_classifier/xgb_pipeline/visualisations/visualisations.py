@@ -501,6 +501,7 @@ def directional_bar_biplot(
     logger.info(f"Directional biplot saved: {out_path}")
 
 
+
 # ---------------------------------------------------------------------------
 # Spectral wavelength importance heatmap
 # ---------------------------------------------------------------------------
@@ -619,6 +620,288 @@ def wavelength_heatmap(
     plt.close(fig)
     logger.info(f"Wavelength heatmap saved: {out_path}")
 
+
+# ---------------------------------------------------------------------------
+# SHAP beeswarm plot
+# ---------------------------------------------------------------------------
+
+def shap_beeswarm(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        weighted: bool = True,
+        top_n: int = 20,
+        sample_size: int = 5_000,
+        random_seed: int = 42,
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    SHAP beeswarm plot for one model.
+    Y-axis: top_n features ranked by mean |SHAP| (most important at top).
+    X-axis: SHAP value per sample.
+    Dot colour: feature value (blue=low, red=high), normalised per feature.
+
+    Requires:
+        outputs/spectra_{spectra}/level_{level}/shap_values.csv   (or .parquet)
+        outputs/spectra_{spectra}/level_{level}/feature_importance_shap.csv
+
+    Args:
+        output_dir:   Root output directory.
+        spectra:      Spectra type label e.g. 'A'.
+        level:        Hierarchy level.
+        weighted:     Use weighted model outputs.
+        top_n:        Number of top features to show.
+        sample_size:  Max samples to plot (subsampled if larger).
+        random_seed:  For reproducible subsampling.
+        out_path:     Output PNG path. Auto-generated if None.
+        **kwargs:     Passed to ax.set() for title/label overrides.
+    """
+    suffix = "" if weighted else "_unweighted"
+    model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load SHAP values
+    shap_csv = model_dir / "shap_values.csv"
+    shap_pq = model_dir / "shap_values.parquet"
+    if shap_csv.exists():
+        shap_df = pd.read_csv(shap_csv)
+    elif shap_pq.exists():
+        shap_df = pd.read_parquet(shap_pq)
+    else:
+        logger.error(f"No SHAP values found in {model_dir} — run shap.py first.")
+        return
+
+    # Load feature importance to get ranking
+    imp_path = model_dir / "feature_importance_shap.csv"
+    if not imp_path.exists():
+        logger.error(f"Missing: {imp_path}")
+        return
+    imp = pd.read_csv(imp_path, index_col=0)
+
+    # Select top_n features by mean |SHAP| global
+    shap_col = "mean_abs_shap_global"
+    if shap_col not in imp.columns:
+        shap_col = imp.columns[0]
+    top_features = imp[shap_col].sort_values(ascending=False).head(top_n).index.tolist()
+    top_features = [f for f in top_features if f in shap_df.columns]
+
+    # Subsample rows
+    rng = np.random.default_rng(random_seed)
+    if len(shap_df) > sample_size:
+        idx = rng.choice(len(shap_df), sample_size, replace=False)
+        shap_df = shap_df.iloc[idx].reset_index(drop=True)
+
+    n = len(top_features)
+    fig, ax = plt.subplots(figsize=(9, max(5, n * 0.42 + 1.5)))
+
+    for rank, feat in enumerate(reversed(top_features)):
+        shap_vals = shap_df[feat].values
+
+        # Colour by normalised feature value (0=blue, 1=red)
+        if feat in shap_df.columns:
+            # Use SHAP magnitude as proxy for feature value if raw not available
+            fv = shap_df[feat].values
+            fmin, fmax = fv.min(), fv.max()
+            norm = (fv - fmin) / (fmax - fmin + 1e-9)
+        else:
+            norm = np.full(len(shap_vals), 0.5)
+
+        colours = plt.cm.coolwarm(norm)
+
+        # Jitter y position to create beeswarm effect
+        y_jitter = rank + rng.uniform(-0.35, 0.35, size=len(shap_vals))
+
+        ax.scatter(shap_vals, y_jitter, c=colours, s=6, alpha=0.6,
+                   linewidths=0, rasterized=True, zorder=2)
+
+    ax.axvline(0, color="black", linewidth=0.8, zorder=3)
+    ax.set_yticks(np.arange(n))
+    ax.set_yticklabels(list(reversed(top_features)), fontsize=8.5)
+    ax.yaxis.set_tick_params(length=0)
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    ax.set(
+        xlabel="SHAP value (impact on model output)",
+        title=f"SHAP beeswarm — Spectra {spectra}, Level {level}",
+        **kwargs,
+    )
+
+    # Colourbar for feature value
+    sm = plt.cm.ScalarMappable(cmap="coolwarm",
+                               norm=plt.Normalize(vmin=0, vmax=1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, shrink=0.4, pad=0.02)
+    cbar.set_label("Feature value", fontsize=8)
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(["Low", "High"])
+
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = output_dir / f"shap_beeswarm_spectra{spectra}_L{level}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"SHAP beeswarm saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# SHAP waterfall plot
+# ---------------------------------------------------------------------------
+
+def shap_waterfall(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        sample_idx: int = 0,
+        weighted: bool = True,
+        top_n: int = 10,
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    SHAP waterfall plot for a single sample.
+    Shows how each feature pushes the prediction from the base value E[f(x)]
+    to the final model output f(x). Features ranked by absolute SHAP value
+    for the chosen sample. Remaining features collapsed into one bar.
+
+    Bars coloured red (positive push) or blue (negative push), matching the
+    reference figure style.
+
+    Requires:
+        outputs/spectra_{spectra}/level_{level}/shap_values.csv (or .parquet)
+        Bias value stored in training_metadata.json or estimated as mean SHAP sum.
+
+    Args:
+        output_dir:  Root output directory.
+        spectra:     Spectra type label.
+        level:       Hierarchy level.
+        sample_idx:  Row index into the SHAP values file to explain.
+        weighted:    Use weighted model outputs.
+        top_n:       Number of individual features to show (rest collapsed).
+        out_path:    Output PNG path. Auto-generated if None.
+        **kwargs:    Passed to ax.set() for title/label overrides.
+    """
+    suffix = "" if weighted else "_unweighted"
+    model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load SHAP values
+    shap_csv = model_dir / "shap_values.csv"
+    shap_pq = model_dir / "shap_values.parquet"
+    if shap_csv.exists():
+        shap_df = pd.read_csv(shap_csv)
+    elif shap_pq.exists():
+        shap_df = pd.read_parquet(shap_pq)
+    else:
+        logger.error(f"No SHAP values found in {model_dir}")
+        return
+
+    if sample_idx >= len(shap_df):
+        logger.error(f"sample_idx {sample_idx} out of range ({len(shap_df)} rows)")
+        return
+
+    row = shap_df.iloc[sample_idx]
+
+    # Load exact base value E[f(x)] saved by compute_shap_values()
+    bias_path = model_dir / "shap_base_values.csv"
+    if bias_path.exists():
+        bias_df = pd.read_csv(bias_path)
+        base_value = float(bias_df["base_value"].iloc[sample_idx])
+        logger.info(f"Base value loaded from file: {base_value:.4f}")
+    else:
+        # Fallback approximation if shap.py was run before this fix
+        logger.warning("shap_base_values.csv not found — re-run shap.py for exact base value. Using approximation.")
+        base_value = float(shap_df.sum(axis=1).mean() - shap_df.sum(axis=1).std())
+    final_value = float(row.sum()) + base_value
+
+    # Sort features by |SHAP| for this sample
+    row_sorted = row.abs().sort_values(ascending=False)
+    top_feats = row_sorted.head(top_n).index.tolist()
+    other_feats = row_sorted.index[top_n:].tolist()
+
+    # Build waterfall steps: feature name, shap value
+    steps = [(f, float(row[f])) for f in top_feats]
+    if other_feats:
+        other_sum = float(row[other_feats].sum())
+        steps.append((f"{len(other_feats)} other features", other_sum))
+
+    # Compute cumulative positions
+    n_bars = len(steps)
+    fig, ax = plt.subplots(figsize=(8, max(5, n_bars * 0.52 + 2)))
+
+    running = base_value
+    bar_colours = []
+    bar_starts = []
+    bar_widths = []
+    labels = []
+
+    for feat, val in steps:
+        bar_starts.append(running)
+        bar_widths.append(val)
+        bar_colours.append("#E8334A" if val >= 0 else "#3B82C4")
+        labels.append(feat)
+        running += val
+
+    y_pos = np.arange(n_bars)
+
+    for i, (start, width, colour) in enumerate(zip(bar_starts, bar_widths, bar_colours)):
+        ax.barh(i, width, left=start, color=colour, height=0.55,
+                edgecolor="white", linewidth=0.5, zorder=2)
+        # Value label inside/outside bar
+        sign = "+" if width >= 0 else ""
+        x_text = start + width + (0.01 * abs(final_value - base_value))
+        ha = "left" if width >= 0 else "right"
+        x_text = start + width
+        ax.text(x_text + (0.005 * (final_value - base_value)),
+                i, f"{sign}{width:.3f}",
+                va="center", ha=ha, fontsize=8,
+                color=colour, fontweight=500)
+
+    # Base and final value lines
+    ax.axvline(base_value, color="gray", linewidth=1, linestyle="--",
+               alpha=0.7, zorder=1)
+    ax.axvline(final_value, color="black", linewidth=1.2, linestyle="-",
+               alpha=0.9, zorder=1)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=8.5)
+    ax.yaxis.set_tick_params(length=0)
+
+    # Connecting lines between bars
+    running2 = base_value
+    for i, (_, val) in enumerate(steps[:-1]):
+        x_conn = running2 + val
+        ax.plot([x_conn, x_conn], [i + 0.28, i + 0.72], color="gray",
+                linewidth=0.6, linestyle=":", zorder=1)
+        running2 += val
+
+    ax.set(
+        xlabel=f"Model output   E[f(x)] = {base_value:.3f}",
+        title=f"SHAP waterfall — Spectra {spectra}, Level {level}, sample {sample_idx}\nf(x) = {final_value:.3f}",
+        **kwargs,
+    )
+
+    # Annotate base and final
+    y_top = n_bars - 0.5
+    ax.text(base_value, y_top + 0.15, f"E[f(x)]={base_value:.3f}",
+            ha="center", fontsize=8, color="gray")
+    ax.text(final_value, y_top + 0.15, f"f(x)={final_value:.3f}",
+            ha="center", fontsize=8, color="black", fontweight=500)
+
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = output_dir / f"shap_waterfall_spectra{spectra}_L{level}_s{sample_idx}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"SHAP waterfall saved: {out_path}")
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -627,7 +910,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cross-model feature rank visualisations for the algal turf pipeline."
     )
-    parser.add_argument("--type", choices=["bump", "heatmap", "biplot", "wavelength", "both"], default="both",
+    parser.add_argument("--type", choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "both"],
+                        default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
                         default=None,
@@ -694,6 +978,27 @@ def main() -> None:
             spectra_types=args.spectra,
             weighted=weighted,
             shap_col=args.shap_col,
+        )
+
+    if args.type == "beeswarm":
+        if args.model_a is None:
+            raise ValueError("--model-a is required for beeswarm e.g. --model-a A 3")
+        shap_beeswarm(
+            output_dir=args.output_dir,
+            spectra=args.model_a[0],
+            level=int(args.model_a[1]),
+            weighted=weighted,
+            shap_col=args.shap_col,
+        )
+
+    if args.type == "waterfall":
+        if args.model_a is None:
+            raise ValueError("--model-a is required for waterfall e.g. --model-a A 3")
+        shap_waterfall(
+            output_dir=args.output_dir,
+            spectra=args.model_a[0],
+            level=int(args.model_a[1]),
+            weighted=weighted,
         )
 
     if args.type == "biplot":

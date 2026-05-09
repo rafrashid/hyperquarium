@@ -59,20 +59,25 @@ def compute_shap_values(
 
     if n_classes == 2:
         # Shape: (n_samples, n_features + 1) — last col is bias term
+        bias_vals = raw[:, -1]
         shap_vals = raw[:, :-1]
         shap_df = pd.DataFrame(shap_vals, columns=feature_names)
     else:
         # Shape: (n_samples, n_classes * (n_features + 1))
-        # Reshape to (n_samples, n_classes, n_features + 1) then drop bias
         n_feat = len(feature_names)
-        shap_vals = raw.reshape(-1, n_classes, n_feat + 1)[:, :, :-1]
-        # Flatten to (n_samples, n_classes * n_features) for storage
+        raw_3d = raw.reshape(-1, n_classes, n_feat + 1)
+        bias_vals = raw_3d[:, :, -1].mean(axis=1)  # Mean bias across classes
+        shap_vals = raw_3d[:, :, :-1]
         cols = [f"{feat}__class{c}" for c in range(n_classes) for feat in feature_names]
         shap_df = pd.DataFrame(shap_vals.reshape(-1, n_classes * n_feat), columns=cols)
 
     if out_dir is not None:
         save_dataframe(shap_df, out_dir / "shap_values", index=False)
         logger.info(f"SHAP values saved — shape: {shap_df.shape}")
+        # Save bias term (base value E[f(x)]) — used by shap_waterfall()
+        bias_df = pd.DataFrame({"base_value": bias_vals})
+        save_csv(bias_df, out_dir / "shap_base_values.csv", index=False)
+        logger.info(f"SHAP base values saved — mean: {bias_vals.mean():.4f}")
 
     return shap_vals
 
