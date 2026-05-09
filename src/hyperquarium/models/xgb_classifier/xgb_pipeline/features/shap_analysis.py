@@ -505,40 +505,82 @@ def plot_pca_tsne(
         })
         save_csv(coords_df, out_dir / "pca_tsne_data.csv", index=False)
 
-    # Colour palette — one colour per class, turf algae always last (on top)
-    # Uses matplotlib's tab10; turf algae gets a bold distinct colour
+    import re as _re
     labels = le.inverse_transform(y_s)
-    other_cls = [c for c in class_names if c != turf_algae_class]
-    plot_order = other_cls + ([turf_algae_class] if turf_algae_class in class_names else [])
 
-    cmap = plt.cm.get_cmap("tab10", len(plot_order))
-    colours = {cls: cmap(i) for i, cls in enumerate(plot_order)}
+    # Detect Level 4: labels contain _ROI_ suffix e.g. turf_algae_ROI_042
+    is_level4 = any("_ROI_" in c for c in class_names)
 
     fig, ax = plt.subplots(figsize=(9, 7))
 
-    for cls in plot_order:
-        mask = labels == cls
-        is_turf = cls == turf_algae_class
-        ax.scatter(
-            X_2d[mask, 0], X_2d[mask, 1],
-            c=[colours[cls]],
-            label=f"{cls} (n={mask.sum():,})",
-            s=18 if is_turf else 8,
-            alpha=0.85 if is_turf else 0.35,
-            linewidths=0.6 if is_turf else 0,
-            edgecolors="white" if is_turf else "none",
-            rasterized=True,
-            zorder=10 if is_turf else 1,
-        )
+    if is_level4:
+        # Extract Level 2 parent and ROI number from each label
+        # e.g. turf_algae_ROI_042 -> parent="turf_algae", roi_num=42
+        roi_pattern = _re.compile(r"^(.+)_ROI_(\d+)$")
+
+        # Unique Level 2 parents — used for colour mapping
+        parents = sorted(set(
+            roi_pattern.match(c).group(1) if roi_pattern.match(c) else c
+            for c in class_names
+        ))
+        cmap = plt.cm.get_cmap("tab10", len(parents))
+        colours = {p: cmap(i) for i, p in enumerate(parents)}
+
+        # Plot each point as its ROI number text, coloured by Level 2 parent
+        for lbl, x, y_ in zip(labels, X_2d[:, 0], X_2d[:, 1]):
+            m = roi_pattern.match(lbl)
+            if m:
+                parent = m.group(1)
+                roi_num = str(int(m.group(2)))  # Drop leading zeros: 042 -> 42
+            else:
+                parent = lbl
+                roi_num = "?"
+            colour = colours.get(parent, "gray")
+            ax.text(x, y_, roi_num, fontsize=5, color=colour,
+                    ha="center", va="center", alpha=0.75,
+                    fontweight="normal", clip_on=True)
+
+        # Legend: one entry per Level 2 parent (not per ROI)
+        import matplotlib.patches as _patches
+        legend_handles = [
+            _patches.Patch(color=colours[p], label=p)
+            for p in parents
+        ]
+        ax.legend(handles=legend_handles, fontsize=8, framealpha=0.7,
+                  loc="best", title="Level 2 class", title_fontsize=8)
+
+    else:
+        # Standard scatter — one colour per class, turf algae on top
+        other_cls = [c for c in class_names if c != turf_algae_class]
+        plot_order = other_cls + ([turf_algae_class] if turf_algae_class in class_names else [])
+        cmap = plt.cm.get_cmap("tab10", len(plot_order))
+        colours = {cls: cmap(i) for i, cls in enumerate(plot_order)}
+
+        for cls in plot_order:
+            mask = labels == cls
+            is_turf = cls == turf_algae_class
+            ax.scatter(
+                X_2d[mask, 0], X_2d[mask, 1],
+                c=[colours[cls]],
+                label=f"{cls} (n={mask.sum():,})",
+                s=18 if is_turf else 8,
+                alpha=0.85 if is_turf else 0.35,
+                linewidths=0.6 if is_turf else 0,
+                edgecolors="white" if is_turf else "none",
+                rasterized=True,
+                zorder=10 if is_turf else 1,
+            )
+        ax.legend(fontsize=8, markerscale=1.5, framealpha=0.7,
+                  loc="best", title="Class", title_fontsize=8)
 
     title = f"PCA → t-SNE — leaf embeddings"
     if title_suffix:
         title += f"\n{title_suffix}"
     title += f"\n(PCA {n_components} components, {var_explained:.0%} variance explained)"
+    if is_level4:
+        title += "  |  markers = ROI number, colour = Level 2 class"
 
     ax.set(title=title, xlabel="t-SNE 1", ylabel="t-SNE 2")
-    ax.legend(fontsize=8, markerscale=1.5, framealpha=0.7,
-              loc="best", title="Class", title_fontsize=8)
     ax.grid(True, alpha=0.2)
     fig.tight_layout()
 
