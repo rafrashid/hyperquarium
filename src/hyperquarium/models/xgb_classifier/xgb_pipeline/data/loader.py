@@ -645,11 +645,20 @@ def subsample_turf_rois(
     # Keep all non-turf rows + only selected turf ROI rows
     mask = (df[level2_col] != turf_algae_class) | (df[roi_col].isin(selected_set))
     out = df[mask].copy()
+    held_out = df[~mask].copy()  # Unselected turf ROIs — saved as unseen data
 
     logger.info(
         f"Turf algae ROIs subsampled: {n_turf_rois} -> {ceiling} "
         f"(ceiling = largest non-turf class: '{non_turf_counts.idxmax()}')"
     )
-    logger.info(f"Rows retained: {len(out):,} of {len(df):,} ({len(out) / len(df) * 100:.1f}%)")
+    logger.info(f"Rows retained : {len(out):,} of {len(df):,} ({len(out) / len(df) * 100:.1f}%)")
+    logger.info(f"Rows held out : {len(held_out):,} ({len(held_out) / len(df) * 100:.1f}%) — unselected turf ROIs")
+
+    # Save held-out turf ROIs to data/ for use with predict.py
+    if len(held_out) > 0:
+        from config.config import DATA_DIR
+        held_out_path = Path(DATA_DIR) / f"turf_held_out_seed{random_seed}.parquet"
+        held_out.to_parquet(held_out_path, index=False)
+        logger.info(f"Held-out turf ROIs saved: {held_out_path}")
 
     return out
