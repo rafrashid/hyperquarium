@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("level", type=int, choices=[1, 2, 3, 4])
     parser.add_argument("weighted", type=str)
     parser.add_argument("--labelset", type=str, default="pilot")
+    parser.add_argument("--spectra", type=str, required=True,
+                        help="Spectra type label (A, B, C, or D) — identifies which model to load")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="Output directory for NetCDF files (default: outputs/maps/)")
     return parser.parse_args()
@@ -143,7 +145,7 @@ def main() -> None:
     weighted = parse_weighted(args.weighted)
     level = args.level
     data_path = Path(args.data_path)
-    spectra = data_path.stem.split("_")[-1].upper()
+    spectra = args.spectra.upper()
 
     from utils.logger import get_logger
     from config.config import OUTPUT_DIR, LOG_DIR, LABEL_COLUMNS, LEVEL_CONFIGS, METADATA_COLUMNS
@@ -180,9 +182,20 @@ def main() -> None:
 
     # ---- Load full dataset (no split — predict all pixels) ----------------
     df = load_spectra(data_path)
-    df = remap_labels(df, dataset=args.labelset)
-    feature_cols = get_feature_columns(df)
     label_col = LABEL_COLUMNS[level]
+
+    # Remap labels only if the raw label column exists (skipped for unlabelled data)
+    if ROI_ID_COLUMN in df.columns and label_col not in df.columns:
+        from config.config import RAW_LABEL_COLUMN
+        if RAW_LABEL_COLUMN in df.columns:
+            df = remap_labels(df, dataset=args.labelset)
+            logger.info("Label remapping applied.")
+        else:
+            logger.info("No raw label column found — skipping remapping (unseen data).")
+    elif label_col in df.columns:
+        logger.info(f"Label column '{label_col}' already present — skipping remapping.")
+
+    feature_cols = get_feature_columns(df)
 
     # Level 4 dynamic n_classes
     if level == 4:
@@ -190,12 +203,17 @@ def main() -> None:
         LEVEL_CONFIGS[4].n_classes = n_rois
         save_roi_mapping(df, model_dir)
 
-    # Encode labels — fit on full data for prediction (no train/test split needed)
+    # Reconstruct label encoder from saved training metadata — works on unseen data
+    # that may not have a label column or may have fewer classes than training.
     from sklearn.preprocessing import LabelEncoder
+    from utils.io import load_json
+    meta = load_json(model_dir / "training_metadata.json")
+    class_map = meta["class_mapping"]  # {str(int): class_name}
+    classes = [class_map[str(i)] for i in range(len(class_map))]
     le = LabelEncoder()
-    le.fit(df[label_col])
-    n_classes = len(le.classes_)
-    logger.info(f"Classes ({n_classes}): {list(le.classes_)}")
+    le.fit(classes)
+    n_classes = len(classes)
+    logger.info(f"Classes ({n_classes}) from training metadata: {classes}")
 
     # ---- Load model -------------------------------------------------------
     booster = load_model(model_path)
