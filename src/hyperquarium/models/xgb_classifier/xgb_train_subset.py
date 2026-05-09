@@ -128,6 +128,7 @@ def main() -> None:
 
     # ---- Train ------------------------------------------------------------
     params = build_params(XGB, lvl_cfg)
+    params = patch_num_class(params, le)  # Ensure num_class matches actual encoded classes
     booster, evals_result = train_model(dtrain, dval, params, XGB, run_id)
     save_model(booster, out_dir)
     save_training_metadata(booster, evals_result, params, le, out_dir, weighted)

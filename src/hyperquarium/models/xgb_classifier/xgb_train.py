@@ -86,7 +86,7 @@ def main() -> None:
                              get_feature_columns, encode_labels,
                              compute_sample_weights, make_dmatrix,
                              save_split_metadata)
-    from models.trainer import build_params, train_model, save_model, save_training_metadata
+    from models.trainer import build_params, patch_num_class, train_model, save_model, save_training_metadata
     from utils.io import make_output_dir
 
     # ---- Validate ---------------------------------------------------------
@@ -126,6 +126,7 @@ def main() -> None:
 
     # ---- Train ------------------------------------------------------------
     params = build_params(XGB, lvl_cfg)
+    params = patch_num_class(params, le)  # Ensure num_class matches actual encoded classes
     booster, evals_result = train_model(dtrain, dval, params, XGB, run_id)
     save_model(booster, out_dir)
     save_training_metadata(booster, evals_result, params, le, out_dir, weighted)

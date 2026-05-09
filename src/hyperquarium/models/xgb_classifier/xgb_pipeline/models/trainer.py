@@ -47,6 +47,8 @@ def build_params(xgb_cfg: XGBConfig, level_cfg: LevelConfig) -> dict:
     }
     if level_cfg.n_classes > 2:
         params["num_class"] = level_cfg.n_classes
+        # Note: num_class must match the actual number of encoded classes in the data.
+        # If you get XGBoostError about label range, call patch_num_class() before training.
 
     logger.info(f"XGBoost params: {params}")
     return params
@@ -55,6 +57,31 @@ def build_params(xgb_cfg: XGBConfig, level_cfg: LevelConfig) -> dict:
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
+
+def patch_num_class(params: dict, le: "LabelEncoder") -> dict:
+    """
+    Overrides num_class in params with the actual number of classes
+    in the fitted LabelEncoder. Call this after build_params() and
+    before train_model() whenever the dataset may have fewer classes
+    than LEVEL_CONFIGS specifies (e.g. subsampled or filtered data).
+
+    Args:
+        params: Parameter dict from build_params().
+        le:     Fitted LabelEncoder from encode_labels().
+
+    Returns:
+        Updated params dict.
+    """
+    if "num_class" in params:
+        actual = len(le.classes_)
+        if params["num_class"] != actual:
+            logger.warning(
+                f"num_class mismatch — config: {params['num_class']}, "
+                f"encoder: {actual}. Patching to {actual}."
+            )
+            params["num_class"] = actual
+    return params
+
 
 def train_model(
         dtrain: xgb.DMatrix | xgb.QuantileDMatrix,
