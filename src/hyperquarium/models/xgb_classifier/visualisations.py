@@ -34,6 +34,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Internal helper
+# ---------------------------------------------------------------------------
+
+# Parameters used by visualisation functions that must NOT be forwarded to ax.set()
+_PIPELINE_KWARGS = frozenset({
+    "shap_col", "weighted", "top_n", "sample_size", "random_seed",
+    "out_path", "feature_order", "spectra_types", "levels", "level",
+    "spectra", "model_a", "model_b", "cmap", "output_dir",
+})
+
+
+def _ax_kwargs(kwargs: dict) -> dict:
+    """Strips pipeline-specific keys from kwargs before passing to ax.set()."""
+    return {k: v for k, v in kwargs.items() if k not in _PIPELINE_KWARGS}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -189,7 +205,7 @@ def bump_chart(
     ax.set(
         ylabel="Rank (1 = most important)",
         title=f"Feature rank trajectories across spectra — Level {level} (top {top_n})",
-        **kwargs,
+        **_ax_kwargs(kwargs),
     )
     ax.invert_yaxis()
     ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
@@ -319,7 +335,7 @@ def rank_heatmap(
     ax.set_yticks(np.arange(n_feat))
     ax.set_yticklabels(rank_df.index, fontsize=8)
     ax.yaxis.set_tick_params(pad=8)  # Padding between strip and y-tick labels
-    ax.set(**kwargs)
+    ax.set(**_ax_kwargs(kwargs))
     ax.set_title(
         f"Feature rank heatmap — all models (rank 1 = most important)\n"
         f"Levels {levels}, Spectra {spectra_types}",
@@ -597,7 +613,7 @@ def wavelength_heatmap(
             f"Level{'s' if isinstance(level, list) else ''} "
             f"{level}\n({shap_col})"
         ),
-        **kwargs,
+        **_ax_kwargs(kwargs),
     )
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
@@ -633,6 +649,7 @@ def shap_beeswarm(
         top_n: int = 20,
         sample_size: int = 5_000,
         random_seed: int = 42,
+        shap_col: str = "mean_abs_shap_global",
         out_path: Path | None = None,
         **kwargs,
 ) -> None:
@@ -678,9 +695,9 @@ def shap_beeswarm(
         return
     imp = pd.read_csv(imp_path, index_col=0)
 
-    # Select top_n features by mean |SHAP| global
-    shap_col = "mean_abs_shap_global"
+    # Select top_n features by specified shap_col
     if shap_col not in imp.columns:
+        logger.warning(f"'{shap_col}' not found in importance file — falling back to first column.")
         shap_col = imp.columns[0]
     top_features = imp[shap_col].sort_values(ascending=False).head(top_n).index.tolist()
     top_features = [f for f in top_features if f in shap_df.columns]
@@ -724,7 +741,7 @@ def shap_beeswarm(
     ax.set(
         xlabel="SHAP value (impact on model output)",
         title=f"SHAP beeswarm — Spectra {spectra}, Level {level}",
-        **kwargs,
+        **_ax_kwargs(kwargs),
     )
 
     # Colourbar for feature value
@@ -880,7 +897,7 @@ def shap_waterfall(
     ax.set(
         xlabel=f"Model output   E[f(x)] = {base_value:.3f}",
         title=f"SHAP waterfall — Spectra {spectra}, Level {level}, sample {sample_idx}\nf(x) = {final_value:.3f}",
-        **kwargs,
+        **_ax_kwargs(kwargs),
     )
 
     # Annotate base and final
