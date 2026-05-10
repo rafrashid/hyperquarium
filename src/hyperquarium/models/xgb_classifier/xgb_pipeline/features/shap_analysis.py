@@ -57,6 +57,31 @@ def compute_shap_values(
     """
     raw = booster.predict(dmatrix, pred_contribs=True)
 
+    n_feat = len(feature_names)
+    n_samples = dmatrix.num_row()
+
+    # Infer actual trained n_classes from raw output size — safer than trusting
+    # the passed n_classes which may differ when data is filtered or subsampled
+    raw_size = raw.size
+    if raw_size == n_samples * (n_feat + 1):
+        # Binary: shape (n_samples, n_features + 1)
+        trained_n_classes = 2
+    else:
+        # Multiclass: shape (n_samples * n_classes * (n_features + 1),)
+        trained_n_classes = raw_size // (n_samples * (n_feat + 1))
+        if trained_n_classes * n_samples * (n_feat + 1) != raw_size:
+            raise ValueError(
+                f"Cannot infer n_classes from raw SHAP shape {raw.shape}. "
+                f"n_samples={n_samples}, n_features={n_feat}"
+            )
+
+    if trained_n_classes != n_classes:
+        logger.warning(
+            f"n_classes mismatch — passed: {n_classes}, "
+            f"inferred from booster: {trained_n_classes}. Using {trained_n_classes}."
+        )
+        n_classes = trained_n_classes
+
     if n_classes == 2:
         # Shape: (n_samples, n_features + 1) — last col is bias term
         bias_vals = raw[:, -1]
@@ -64,9 +89,8 @@ def compute_shap_values(
         shap_df = pd.DataFrame(shap_vals, columns=feature_names)
     else:
         # Shape: (n_samples, n_classes * (n_features + 1))
-        n_feat = len(feature_names)
         raw_3d = raw.reshape(-1, n_classes, n_feat + 1)
-        bias_vals = raw_3d[:, :, -1].mean(axis=1)  # Mean bias across classes
+        bias_vals = raw_3d[:, :, -1].mean(axis=1)
         shap_vals = raw_3d[:, :, :-1]
         cols = [f"{feat}__class{c}" for c in range(n_classes) for feat in feature_names]
         shap_df = pd.DataFrame(shap_vals.reshape(-1, n_classes * n_feat), columns=cols)

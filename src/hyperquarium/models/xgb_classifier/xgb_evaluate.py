@@ -122,13 +122,16 @@ def main() -> None:
     evals_result = load_json(out_dir / "evals_result.json")
 
     # ---- Evaluate ---------------------------------------------------------
+    # Use actual encoded class count rather than config value — safer when
+    # data is filtered or subsampled and some classes may be absent
+    n_classes_actual = len(le.classes_)
     run_evaluation(
         booster=booster,
         dtest=dtest,
         y_test=y_test,
         evals_result=evals_result,
         le=le,
-        n_classes=lvl_cfg.n_classes,
+        n_classes=n_classes_actual,
         eval_metric=lvl_cfg.eval_metric,
         turf_algae_class=TURF_ALGAE_CLASS,
         out_dir=out_dir,
