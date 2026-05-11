@@ -565,9 +565,9 @@ def plot_pca_tsne(
                     fontweight="normal", clip_on=False)
 
         # Set axis limits explicitly from data — ax.text() does not auto-update limits
-        pad = (X_2d[:, 0].ptp() + X_2d[:, 1].ptp()) * 0.05
-        ax.set_xlim(X_2d[:, 0].min() - pad, X_2d[:, 0].max() + pad)
-        ax.set_ylim(X_2d[:, 1].min() - pad, X_2d[:, 1].max() + pad)
+        pad = ((np.nanmax(X_2d[:, 0]) - np.nanmin(X_2d[:, 0])) + (np.nanmax(X_2d[:, 1]) - np.nanmin(X_2d[:, 1]))) * 0.05
+        ax.set_xlim(np.nanmin(X_2d[:, 0]) - pad, np.nanmax(X_2d[:, 0]) + pad)
+        ax.set_ylim(np.nanmin(X_2d[:, 1]) - pad, np.nanmax(X_2d[:, 1]) + pad)
 
         # Legend: one entry per Level 2 parent (not per ROI)
         import matplotlib.patches as _patches
