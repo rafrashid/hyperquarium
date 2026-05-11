@@ -22,6 +22,9 @@ from utils.io import save_csv, save_json, load_dataframe, load_spectra_file, sav
 
 logger = logging.getLogger(__name__)
 
+# Module-level store for ROI mapping — avoids pandas attribute assignment warning
+_roi_mapping_store: dict = {}
+
 
 # ---------------------------------------------------------------------------
 # Loading
@@ -237,9 +240,9 @@ def remap_labels(
         for cls, n in roi_per_class.sort_index().items():
             logger.info(f"    {cls:<30} {n:>4} ROIs")
 
-        # Store mapping table on the DataFrame for export by the caller
+        # Store mapping table in module-level dict for export by the caller
         # Columns: roi_ID, label_level1, label_level2, label_level4
-        out._roi_mapping = roi_map[[
+        _roi_mapping_store['current'] = roi_map[[
             ROI_ID_COLUMN, level1_col, level2_col, level4_col
         ]].sort_values([level2_col, level4_col]).reset_index(drop=True)
 
@@ -536,9 +539,9 @@ def save_roi_mapping(df: pd.DataFrame, out_dir: Path) -> None:
         df:      DataFrame returned by remap_labels() (must have _roi_mapping attr).
         out_dir: Output directory — saved as roi_label_mapping.csv.
     """
-    mapping = getattr(df, "_roi_mapping", None)
+    mapping = _roi_mapping_store.get("current")
     if mapping is None:
-        logger.warning("No ROI mapping found on DataFrame — was remap_labels() called?")
+        logger.warning("No ROI mapping found — was remap_labels() called?")
         return
     save_csv(mapping, out_dir / "roi_label_mapping.csv", index=False)
     logger.info(f"ROI label mapping exported: {out_dir / 'roi_label_mapping.csv'} "
@@ -581,6 +584,7 @@ def subsample_turf_rois(
         df: pd.DataFrame,
         turf_algae_class: str = "turf_algae",
         random_seed: int = 42,
+        spectra: str | None = None,
 ) -> pd.DataFrame:
     """
     Reduces turf algae ROI count to match the next most abundant Level 2 class.
@@ -590,10 +594,17 @@ def subsample_turf_rois(
     The ceiling is determined by the largest non-turf Level 2 class ROI count,
     making the subsampling decision data-driven rather than arbitrary.
 
+    Held-out turf ROIs are saved to data/turf_held_out_seed{seed}_spectra{X}.parquet.
+    Spectra label is included in the filename to avoid overwriting when processing
+    multiple spectra types.
+
     Args:
         df:               DataFrame after remap_labels() has been called.
         turf_algae_class: Level 2 label for turf algae.
         random_seed:      Random seed for reproducibility.
+        spectra:          Spectra type label e.g. 'A' — included in held-out filename.
+                          If None, no spectra suffix is added (not recommended when
+                          processing multiple spectra types).
 
     Returns:
         Subsampled DataFrame with turf algae ROIs reduced to match ceiling.
@@ -657,7 +668,8 @@ def subsample_turf_rois(
     # Save held-out turf ROIs to data/ for use with predict.py
     if len(held_out) > 0:
         from config.config import DATA_DIR
-        held_out_path = Path(DATA_DIR) / f"turf_held_out_seed{random_seed}.parquet"
+        spectra_suffix = f"_spectra{spectra}" if spectra is not None else ""
+        held_out_path = Path(DATA_DIR) / f"turf_held_out_seed{random_seed}{spectra_suffix}.parquet"
         held_out.to_parquet(held_out_path, index=False)
         logger.info(f"Held-out turf ROIs saved: {held_out_path}")
 

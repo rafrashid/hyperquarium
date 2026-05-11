@@ -27,7 +27,6 @@ import argparse
 import sys
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -105,7 +104,8 @@ def main() -> None:
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
-    df = subsample_turf_rois(df, random_seed=42)  # optional — remove for full dataset
+    # Pass spectra label so held-out file is named uniquely per spectra type
+    df = subsample_turf_rois(df, spectra=spectra, random_seed=42)  # Uncomment to apply
 
     # Level 4: derive n_classes dynamically from unique ROIs in data
     if level == 4:
