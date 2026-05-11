@@ -87,7 +87,7 @@ def main() -> None:
                              get_feature_columns, encode_labels,
                              compute_sample_weights, make_dmatrix,
                              save_split_metadata, subsample_turf_rois)
-    from models.trainer import build_params, train_model, save_model, save_training_metadata
+    from models.trainer import build_params, patch_num_class, train_model, save_model, save_training_metadata
     from utils.io import make_output_dir
 
     # ---- Validate ---------------------------------------------------------
