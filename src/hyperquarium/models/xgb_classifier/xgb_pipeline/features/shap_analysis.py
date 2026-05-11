@@ -562,7 +562,12 @@ def plot_pca_tsne(
             colour = colours.get(parent, "gray")
             ax.text(x, y_, roi_num, fontsize=5, color=colour,
                     ha="center", va="center", alpha=0.75,
-                    fontweight="normal", clip_on=True)
+                    fontweight="normal", clip_on=False)
+
+        # Set axis limits explicitly from data — ax.text() does not auto-update limits
+        pad = (X_2d[:, 0].ptp() + X_2d[:, 1].ptp()) * 0.05
+        ax.set_xlim(X_2d[:, 0].min() - pad, X_2d[:, 0].max() + pad)
+        ax.set_ylim(X_2d[:, 1].min() - pad, X_2d[:, 1].max() + pad)
 
         # Legend: one entry per Level 2 parent (not per ROI)
         import matplotlib.patches as _patches
