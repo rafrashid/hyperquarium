@@ -82,10 +82,10 @@ def main() -> None:
 
     # ---- Imports ----------------------------------------------------------
     from config.config import LEVEL_CONFIGS, XGB, SPLIT, OUTPUT_DIR
-    from data.loader import (load_spectra, remap_labels, split_data,
+    from data.loader import (load_spectra, remap_labels, subsample_turf_rois, split_data,
                              get_feature_columns, encode_labels,
                              compute_sample_weights, make_dmatrix,
-                             save_split_metadata, subsample_turf_rois)
+                             save_split_metadata, save_roi_mapping)
     from models.trainer import build_params, patch_num_class, train_model, save_model, save_training_metadata
     from utils.io import make_output_dir
 
@@ -105,7 +105,7 @@ def main() -> None:
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
     # Pass spectra label so held-out file is named uniquely per spectra type
-    df = subsample_turf_rois(df, spectra=spectra, random_seed=42)  # Uncomment to apply
+    df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
 
     # Level 4: derive n_classes dynamically from unique ROIs in data
     if level == 4:
@@ -113,7 +113,6 @@ def main() -> None:
         n_rois = df[LABEL_COLUMNS[4]].nunique()
         LEVEL_CONFIGS[4].n_classes = n_rois
         logger.info(f"Level 4 n_classes set dynamically: {n_rois}")
-        from data.loader import save_roi_mapping
         save_roi_mapping(df, out_dir)
 
     train_df, val_df, test_df = split_data(df, level, SPLIT)
