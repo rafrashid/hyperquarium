@@ -641,6 +641,64 @@ def wavelength_heatmap(
 # SHAP beeswarm plot
 # ---------------------------------------------------------------------------
 
+def _plot_single_beeswarm(
+        shap_df: "pd.DataFrame",
+        top_features: list,
+        class_label: str,
+        spectra: str,
+        level: int,
+        sample_size: int,
+        random_seed: int,
+        model_dir: "Path",
+        kwargs: dict,
+) -> None:
+    """Internal — plots and saves one beeswarm for a single class."""
+    rng = np.random.default_rng(random_seed)
+    df = shap_df.copy()
+    if len(df) > sample_size:
+        idx = rng.choice(len(df), sample_size, replace=False)
+        df = df.iloc[idx].reset_index(drop=True)
+
+    n = len(top_features)
+    fig, ax = plt.subplots(figsize=(9, max(5, n * 0.42 + 1.5)))
+
+    for rank, feat in enumerate(reversed(top_features)):
+        shap_vals = df[feat].values
+        fv = df[feat].values
+        fmin, fmax = fv.min(), fv.max()
+        norm = (fv - fmin) / (fmax - fmin + 1e-9)
+        colours = plt.cm.coolwarm(norm)
+        y_jitter = rank + rng.uniform(-0.35, 0.35, size=len(shap_vals))
+        ax.scatter(shap_vals, y_jitter, c=colours, s=6, alpha=0.6,
+                   linewidths=0, rasterized=True, zorder=2)
+
+    ax.axvline(0, color="black", linewidth=0.8, zorder=3)
+    ax.set_yticks(np.arange(n))
+    ax.set_yticklabels(list(reversed(top_features)), fontsize=8.5)
+    ax.yaxis.set_tick_params(length=0)
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set(
+        xlabel="SHAP value (impact on model output)",
+        title=f"SHAP beeswarm — Spectra {spectra}, Level {level} | class: {class_label}",
+        **_ax_kwargs(kwargs),
+    )
+    sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=0, vmax=1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, shrink=0.4, pad=0.02)
+    cbar.set_label("Feature value", fontsize=8)
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(["Low", "High"])
+    fig.tight_layout()
+
+    safe_label = class_label.replace(" ", "_").replace("/", "_")
+    out_path = model_dir / f"shap_beeswarm_spectra{spectra}_L{level}_{safe_label}.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"SHAP beeswarm saved: {out_path}")
+
+
 def shap_beeswarm(
         output_dir: Path,
         spectra: str,
@@ -650,30 +708,35 @@ def shap_beeswarm(
         sample_size: int = 5_000,
         random_seed: int = 42,
         shap_col: str = "mean_abs_shap_global",
+        class_names: list[str] | None = None,
         out_path: Path | None = None,
         **kwargs,
 ) -> None:
     """
-    SHAP beeswarm plot for one model.
-    Y-axis: top_n features ranked by mean |SHAP| (most important at top).
-    X-axis: SHAP value per sample.
-    Dot colour: feature value (blue=low, red=high), normalised per feature.
+    SHAP beeswarm plot — one PNG per class, saved to the model output directory.
 
-    Requires:
-        outputs/spectra_{spectra}/level_{level}/shap_values.csv   (or .parquet)
-        outputs/spectra_{spectra}/level_{level}/feature_importance_shap.csv
+    For binary models: one plot for the positive class.
+    For multiclass: one plot per class (columns named {feat}__class{c} in SHAP CSV).
+    Raises ValueError if n_classes > 20.
+
+    Output filenames: shap_beeswarm_spectra{spectra}_L{level}_{class_label}.png
+    Saved to: outputs/spectra_{spectra}/level_{level}/
 
     Args:
         output_dir:   Root output directory.
         spectra:      Spectra type label e.g. 'A'.
         level:        Hierarchy level.
         weighted:     Use weighted model outputs.
-        top_n:        Number of top features to show.
+        top_n:        Number of top features to show per plot.
         sample_size:  Max samples to plot (subsampled if larger).
         random_seed:  For reproducible subsampling.
-        out_path:     Output PNG path. Auto-generated if None.
+        shap_col:     Importance column for feature ranking.
+        class_names:  Class label strings. If None, loaded from training_metadata.json.
+        out_path:     Ignored — output path is always auto-generated per class.
         **kwargs:     Passed to ax.set() for title/label overrides.
     """
+    from utils.io import load_json
+
     suffix = "" if weighted else "_unweighted"
     model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
 
@@ -688,85 +751,309 @@ def shap_beeswarm(
         logger.error(f"No SHAP values found in {model_dir} — run shap.py first.")
         return
 
-    # Load feature importance to get ranking
+    # Load class names from training metadata if not provided
+    if class_names is None:
+        meta_path = model_dir / "training_metadata.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            class_map = meta.get("class_mapping", {})
+            class_names = [class_map[str(i)] for i in range(len(class_map))]
+        else:
+            class_names = None
+
+    # Detect binary vs multiclass from column names
+    multiclass_cols = [c for c in shap_df.columns if "__class" in c]
+    is_multiclass = len(multiclass_cols) > 0
+
+    if is_multiclass:
+        # Infer n_classes from column suffix
+        class_indices = sorted(set(
+            int(c.split("__class")[-1]) for c in multiclass_cols
+        ))
+        n_classes = len(class_indices)
+        if n_classes > 20:
+            raise ValueError(
+                f"n_classes={n_classes} exceeds the maximum of 20 for beeswarm plots. "
+                f"Specify a subset via class_names."
+            )
+    else:
+        n_classes = 2
+        class_indices = [1]  # Binary: only plot positive class
+
+    # Load feature importance for ranking
     imp_path = model_dir / "feature_importance_shap.csv"
     if not imp_path.exists():
         logger.error(f"Missing: {imp_path}")
         return
     imp = pd.read_csv(imp_path, index_col=0)
-
-    # Select top_n features by specified shap_col
     if shap_col not in imp.columns:
-        logger.warning(f"'{shap_col}' not found in importance file — falling back to first column.")
+        logger.warning(f"'{shap_col}' not in importance — falling back to first column.")
         shap_col = imp.columns[0]
-    top_features = imp[shap_col].sort_values(ascending=False).head(top_n).index.tolist()
-    top_features = [f for f in top_features if f in shap_df.columns]
 
-    # Subsample rows
-    rng = np.random.default_rng(random_seed)
-    if len(shap_df) > sample_size:
-        idx = rng.choice(len(shap_df), sample_size, replace=False)
-        shap_df = shap_df.iloc[idx].reset_index(drop=True)
+    logger.info(f"Generating {n_classes} beeswarm plot(s) for spectra {spectra} level {level}")
 
-    n = len(top_features)
-    fig, ax = plt.subplots(figsize=(9, max(5, n * 0.42 + 1.5)))
-
-    for rank, feat in enumerate(reversed(top_features)):
-        shap_vals = shap_df[feat].values
-
-        # Colour by normalised feature value (0=blue, 1=red)
-        if feat in shap_df.columns:
-            # Use SHAP magnitude as proxy for feature value if raw not available
-            fv = shap_df[feat].values
-            fmin, fmax = fv.min(), fv.max()
-            norm = (fv - fmin) / (fmax - fmin + 1e-9)
+    for c_idx in class_indices:
+        if is_multiclass:
+            # Extract columns for this class: {feat}__class{c}
+            class_cols = [col for col in multiclass_cols if col.endswith(f"__class{c_idx}")]
+            feat_names = [col.replace(f"__class{c_idx}", "") for col in class_cols]
+            class_shap_df = shap_df[class_cols].copy()
+            class_shap_df.columns = feat_names
+            # Rank by global importance for this class (use same shap_col if available)
+            avail_feats = [f for f in imp.index if f in feat_names]
+            top_features = (
+                imp.loc[avail_feats, shap_col]
+                .sort_values(ascending=False)
+                .head(top_n)
+                .index.tolist()
+            )
+            label = class_names[c_idx] if class_names and c_idx < len(class_names) else f"class{c_idx}"
         else:
-            norm = np.full(len(shap_vals), 0.5)
+            # Binary: use columns directly (no __class suffix)
+            feat_names = [c for c in shap_df.columns if "__class" not in c]
+            class_shap_df = shap_df[feat_names].copy()
+            avail_feats = [f for f in imp.index if f in feat_names]
+            top_features = (
+                imp.loc[avail_feats, shap_col]
+                .sort_values(ascending=False)
+                .head(top_n)
+                .index.tolist()
+            )
+            label = class_names[1] if class_names and len(class_names) > 1 else "positive"
 
-        colours = plt.cm.coolwarm(norm)
-
-        # Jitter y position to create beeswarm effect
-        y_jitter = rank + rng.uniform(-0.35, 0.35, size=len(shap_vals))
-
-        ax.scatter(shap_vals, y_jitter, c=colours, s=6, alpha=0.6,
-                   linewidths=0, rasterized=True, zorder=2)
-
-    ax.axvline(0, color="black", linewidth=0.8, zorder=3)
-    ax.set_yticks(np.arange(n))
-    ax.set_yticklabels(list(reversed(top_features)), fontsize=8.5)
-    ax.yaxis.set_tick_params(length=0)
-    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
-    ax.spines[["top", "right"]].set_visible(False)
-
-    ax.set(
-        xlabel="SHAP value (impact on model output)",
-        title=f"SHAP beeswarm — Spectra {spectra}, Level {level}",
-        **_ax_kwargs(kwargs),
-    )
-
-    # Colourbar for feature value
-    sm = plt.cm.ScalarMappable(cmap="coolwarm",
-                               norm=plt.Normalize(vmin=0, vmax=1))
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, shrink=0.4, pad=0.02)
-    cbar.set_label("Feature value", fontsize=8)
-    cbar.set_ticks([0, 1])
-    cbar.set_ticklabels(["Low", "High"])
-
-    fig.tight_layout()
-
-    if out_path is None:
-        out_path = output_dir / f"shap_beeswarm_spectra{spectra}_L{level}.png"
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info(f"SHAP beeswarm saved: {out_path}")
+        _plot_single_beeswarm(
+            shap_df=class_shap_df,
+            top_features=top_features,
+            class_label=label,
+            spectra=spectra,
+            level=level,
+            sample_size=sample_size,
+            random_seed=random_seed,
+            model_dir=model_dir,
+            kwargs=kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
 # SHAP waterfall plot
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Waterfall axis helper + interesting 2×2 plot
+# ---------------------------------------------------------------------------
+
+def _draw_waterfall_on_ax(
+        ax: "plt.Axes",
+        steps: list,
+        base_value: float,
+        final_value: float,
+        title: str,
+        kwargs: dict,
+) -> None:
+    """
+    Internal — draws one waterfall chart onto an existing Axes object.
+    Shared by shap_waterfall() (single figure) and waterfall_interesting() (2×2 grid).
+    """
+    n_bars = len(steps)
+    running = base_value
+    bar_colours, bar_starts, bar_widths, labels = [], [], [], []
+
+    for feat, val in steps:
+        bar_starts.append(running)
+        bar_widths.append(val)
+        bar_colours.append("#E8334A" if val >= 0 else "#3B82C4")
+        labels.append(feat)
+        running += val
+
+    y_pos = np.arange(n_bars)
+    spread = abs(final_value - base_value) or 1.0
+
+    for i, (start, width, colour) in enumerate(zip(bar_starts, bar_widths, bar_colours)):
+        ax.barh(i, width, left=start, color=colour, height=0.55,
+                edgecolor="white", linewidth=0.5, zorder=2)
+        sign = "+" if width >= 0 else ""
+        ha = "left" if width >= 0 else "right"
+        ax.text(start + width + (0.005 * spread * (1 if width >= 0 else -1)),
+                i, f"{sign}{width:.3f}",
+                va="center", ha=ha, fontsize=7, color=colour, fontweight=500)
+
+    ax.axvline(base_value, color="gray", linewidth=0.9, linestyle="--", alpha=0.7, zorder=1)
+    ax.axvline(final_value, color="black", linewidth=1.1, linestyle="-", alpha=0.9, zorder=1)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=7.5)
+    ax.yaxis.set_tick_params(length=0)
+
+    running2 = base_value
+    for i, (_, val) in enumerate(steps[:-1]):
+        x_conn = running2 + val
+        ax.plot([x_conn, x_conn], [i + 0.28, i + 0.72],
+                color="gray", linewidth=0.6, linestyle=":", zorder=1)
+        running2 += val
+
+    y_top = n_bars - 0.5
+    ax.text(base_value, y_top + 0.12, f"E[f(x)]={base_value:.3f}",
+            ha="center", fontsize=7, color="gray")
+    ax.text(final_value, y_top + 0.12, f"f(x)={final_value:.3f}",
+            ha="center", fontsize=7, color="black", fontweight=500)
+
+    ax.set(xlabel=f"Model output   E[f(x)] = {base_value:.3f}",
+           title=title, **_ax_kwargs(kwargs))
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
+def waterfall_interesting(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        weighted: bool = True,
+        top_n: int = 10,
+        class_names: list[str] | None = None,
+        **kwargs,
+) -> None:
+    """
+    For each class, produces one figure with 4 waterfall subplots (2×2):
+        top-left:     most_confident
+        top-right:    least_confident
+        bottom-left:  most_uncertain
+        bottom-right: misclassified  (greyed out if unavailable)
+
+    Calls find_interesting_samples() internally — no need to run it separately.
+    One PNG per class saved to the model output directory.
+
+    Output: shap_waterfall_interesting_spectra{spectra}_L{level}_{class_label}.png
+
+    Args:
+        output_dir:   Root output directory.
+        spectra:      Spectra type label e.g. 'A'.
+        level:        Hierarchy level.
+        weighted:     Use weighted model outputs.
+        top_n:        Features per subplot.
+        class_names:  Override class names (loaded from metadata if None).
+        **kwargs:     Passed to each ax.set() via _ax_kwargs.
+    """
+    from utils.io import load_json
+
+    suffix = "" if weighted else "_unweighted"
+    model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load SHAP values
+    shap_csv = model_dir / "shap_values.csv"
+    shap_pq = model_dir / "shap_values.parquet"
+    if shap_csv.exists():
+        shap_df = pd.read_csv(shap_csv)
+    elif shap_pq.exists():
+        shap_df = pd.read_parquet(shap_pq)
+    else:
+        logger.error(f"No SHAP values found in {model_dir} — run shap.py first.")
+        return
+
+    # Load class names
+    if class_names is None:
+        meta_path = model_dir / "training_metadata.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            class_map = meta["class_mapping"]
+            class_names = [class_map[str(i)] for i in range(len(class_map))]
+        else:
+            logger.error("training_metadata.json not found.")
+            return
+
+    n_classes = len(class_names)
+    if n_classes > 20:
+        raise ValueError(f"n_classes={n_classes} exceeds maximum of 20.")
+
+    # Load base values
+    bias_path = model_dir / "shap_base_values.csv"
+    bias_df = pd.read_csv(bias_path) if bias_path.exists() else None
+
+    # Detect binary vs multiclass
+    multiclass_cols = [c for c in shap_df.columns if "__class" in c]
+    is_multiclass = len(multiclass_cols) > 0
+
+    # Get interesting sample indices
+    samples_df = find_interesting_samples(
+        output_dir=output_dir, spectra=spectra,
+        level=level, weighted=weighted, n_per_class=1,
+    )
+
+    categories = ["most_confident", "least_confident", "most_uncertain", "misclassified"]
+    cat_titles = {
+        "most_confident": "Most confident",
+        "least_confident": "Least confident",
+        "most_uncertain": "Most uncertain",
+        "misclassified": "Misclassified",
+    }
+
+    for c_idx, cls_name in enumerate(class_names):
+        cls_samples = samples_df[samples_df["class_idx"] == c_idx]
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, max(8, top_n * 0.6 + 3)))
+        fig.suptitle(
+            f"SHAP waterfall — Spectra {spectra}, Level {level} | class: {cls_name}",
+            fontsize=12, fontweight=500, y=1.01,
+        )
+
+        for ax, category in zip(axes.flat, categories):
+            row_match = cls_samples[cls_samples["category"] == category]
+
+            if row_match.empty:
+                # Grey out unavailable subplot
+                ax.set_facecolor("#F5F5F5")
+                ax.text(0.5, 0.5, f"{cat_titles[category]}\n(not available)",
+                        ha="center", va="center", fontsize=10,
+                        color="gray", transform=ax.transAxes)
+                ax.axis("off")
+                continue
+
+            sample_idx = int(row_match.iloc[0]["sample_idx"])
+            prob = float(row_match.iloc[0]["probability"])
+            pred_cls = row_match.iloc[0]["predicted_class"]
+
+            # Extract SHAP row for this class
+            if is_multiclass:
+                class_cols = [c for c in multiclass_cols if c.endswith(f"__class{c_idx}")]
+                feat_names = [c.replace(f"__class{c_idx}", "") for c in class_cols]
+                row_df = shap_df[class_cols].copy()
+                row_df.columns = feat_names
+                row = row_df.iloc[sample_idx]
+            else:
+                feat_cols = [c for c in shap_df.columns if "__class" not in c]
+                row = shap_df[feat_cols].iloc[sample_idx]
+
+            # Base and final values
+            if bias_df is not None and sample_idx < len(bias_df):
+                base_value = float(bias_df["base_value"].iloc[sample_idx])
+            else:
+                base_value = float(shap_df.sum(axis=1).mean() - shap_df.sum(axis=1).std())
+            final_value = float(row.sum()) + base_value
+
+            # Build steps
+            row_sorted = row.abs().sort_values(ascending=False)
+            top_feats = row_sorted.head(top_n).index.tolist()
+            other_feats = row_sorted.index[top_n:].tolist()
+            steps = [(f, float(row[f])) for f in top_feats]
+            if other_feats:
+                steps.append((f"{len(other_feats)} other features",
+                              float(row[other_feats].sum())))
+
+            # Subplot title
+            if category == "misclassified":
+                sub_title = f"{cat_titles[category]} (predicted: {pred_cls})\nP({cls_name})={prob:.3f}  sample {sample_idx}"
+            else:
+                sub_title = f"{cat_titles[category]}\nP({cls_name})={prob:.3f}  sample {sample_idx}"
+
+            _draw_waterfall_on_ax(ax, steps, base_value, final_value, sub_title, kwargs)
+
+        fig.tight_layout()
+        safe_label = cls_name.replace(" ", "_").replace("/", "_")
+        out_path = model_dir / f"shap_waterfall_interesting_spectra{spectra}_L{level}_{safe_label}.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Interesting waterfall saved: {out_path}")
+
 
 def shap_waterfall(
         output_dir: Path,
@@ -775,32 +1062,31 @@ def shap_waterfall(
         sample_idx: int = 0,
         weighted: bool = True,
         top_n: int = 10,
+        class_idx: int | None = None,
+        class_names: list[str] | None = None,
         out_path: Path | None = None,
         **kwargs,
 ) -> None:
     """
     SHAP waterfall plot for a single sample.
-    Shows how each feature pushes the prediction from the base value E[f(x)]
-    to the final model output f(x). Features ranked by absolute SHAP value
-    for the chosen sample. Remaining features collapsed into one bar.
-
-    Bars coloured red (positive push) or blue (negative push), matching the
-    reference figure style.
-
-    Requires:
-        outputs/spectra_{spectra}/level_{level}/shap_values.csv (or .parquet)
-        Bias value stored in training_metadata.json or estimated as mean SHAP sum.
+    Shows how each feature pushes the prediction from E[f(x)] to f(x).
+    For multiclass, specify class_idx to select which class to explain.
+    Saved to: outputs/spectra_{spectra}/level_{level}/
 
     Args:
-        output_dir:  Root output directory.
-        spectra:     Spectra type label.
-        level:       Hierarchy level.
-        sample_idx:  Row index into the SHAP values file to explain.
-        weighted:    Use weighted model outputs.
-        top_n:       Number of individual features to show (rest collapsed).
-        out_path:    Output PNG path. Auto-generated if None.
-        **kwargs:    Passed to ax.set() for title/label overrides.
+        output_dir:   Root output directory.
+        spectra:      Spectra type label.
+        level:        Hierarchy level.
+        sample_idx:   Row index into the SHAP values file to explain.
+        weighted:     Use weighted model outputs.
+        top_n:        Number of individual features to show (rest collapsed).
+        class_idx:    Class index for multiclass models. None = binary or class 0.
+        class_names:  Class label strings. If None, loaded from training_metadata.json.
+        out_path:     Output PNG path. Auto-generated if None.
+        **kwargs:     Passed to ax.set() for title/label overrides.
     """
+    from utils.io import load_json
+
     suffix = "" if weighted else "_unweighted"
     model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
 
@@ -819,7 +1105,34 @@ def shap_waterfall(
         logger.error(f"sample_idx {sample_idx} out of range ({len(shap_df)} rows)")
         return
 
-    row = shap_df.iloc[sample_idx]
+    # Detect binary vs multiclass
+    multiclass_cols = [c for c in shap_df.columns if "__class" in c]
+    is_multiclass = len(multiclass_cols) > 0
+
+    # Load class names from training metadata if not provided
+    if class_names is None:
+        meta_path = model_dir / "training_metadata.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            class_map = meta.get("class_mapping", {})
+            class_names = [class_map[str(i)] for i in range(len(class_map))]
+
+    if is_multiclass:
+        c_idx = class_idx if class_idx is not None else 0
+        n_classes = len(set(int(c.split("__class")[-1]) for c in multiclass_cols))
+        if n_classes > 20:
+            raise ValueError(f"n_classes={n_classes} exceeds maximum of 20.")
+        # Extract columns for chosen class
+        class_cols = [c for c in multiclass_cols if c.endswith(f"__class{c_idx}")]
+        feat_names = [c.replace(f"__class{c_idx}", "") for c in class_cols]
+        row_df = shap_df[class_cols].copy()
+        row_df.columns = feat_names
+        row = row_df.iloc[sample_idx]
+        class_label = class_names[c_idx] if class_names and c_idx < len(class_names) else f"class{c_idx}"
+    else:
+        feat_cols = [c for c in shap_df.columns if "__class" not in c]
+        row = shap_df[feat_cols].iloc[sample_idx]
+        class_label = class_names[1] if class_names and len(class_names) > 1 else "positive"
 
     # Load exact base value E[f(x)] saved by compute_shap_values()
     bias_path = model_dir / "shap_base_values.csv"
@@ -837,87 +1150,223 @@ def shap_waterfall(
     row_sorted = row.abs().sort_values(ascending=False)
     top_feats = row_sorted.head(top_n).index.tolist()
     other_feats = row_sorted.index[top_n:].tolist()
-
-    # Build waterfall steps: feature name, shap value
     steps = [(f, float(row[f])) for f in top_feats]
     if other_feats:
-        other_sum = float(row[other_feats].sum())
-        steps.append((f"{len(other_feats)} other features", other_sum))
+        steps.append((f"{len(other_feats)} other features", float(row[other_feats].sum())))
 
-    # Compute cumulative positions
-    n_bars = len(steps)
-    fig, ax = plt.subplots(figsize=(8, max(5, n_bars * 0.52 + 2)))
-
-    running = base_value
-    bar_colours = []
-    bar_starts = []
-    bar_widths = []
-    labels = []
-
-    for feat, val in steps:
-        bar_starts.append(running)
-        bar_widths.append(val)
-        bar_colours.append("#E8334A" if val >= 0 else "#3B82C4")
-        labels.append(feat)
-        running += val
-
-    y_pos = np.arange(n_bars)
-
-    for i, (start, width, colour) in enumerate(zip(bar_starts, bar_widths, bar_colours)):
-        ax.barh(i, width, left=start, color=colour, height=0.55,
-                edgecolor="white", linewidth=0.5, zorder=2)
-        # Value label inside/outside bar
-        sign = "+" if width >= 0 else ""
-        x_text = start + width + (0.01 * abs(final_value - base_value))
-        ha = "left" if width >= 0 else "right"
-        x_text = start + width
-        ax.text(x_text + (0.005 * (final_value - base_value)),
-                i, f"{sign}{width:.3f}",
-                va="center", ha=ha, fontsize=8,
-                color=colour, fontweight=500)
-
-    # Base and final value lines
-    ax.axvline(base_value, color="gray", linewidth=1, linestyle="--",
-               alpha=0.7, zorder=1)
-    ax.axvline(final_value, color="black", linewidth=1.2, linestyle="-",
-               alpha=0.9, zorder=1)
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels, fontsize=8.5)
-    ax.yaxis.set_tick_params(length=0)
-
-    # Connecting lines between bars
-    running2 = base_value
-    for i, (_, val) in enumerate(steps[:-1]):
-        x_conn = running2 + val
-        ax.plot([x_conn, x_conn], [i + 0.28, i + 0.72], color="gray",
-                linewidth=0.6, linestyle=":", zorder=1)
-        running2 += val
-
-    ax.set(
-        xlabel=f"Model output   E[f(x)] = {base_value:.3f}",
-        title=f"SHAP waterfall — Spectra {spectra}, Level {level}, sample {sample_idx}\nf(x) = {final_value:.3f}",
-        **_ax_kwargs(kwargs),
+    subtitle = (
+        f"SHAP waterfall — Spectra {spectra}, Level {level} | class: {class_label}\n"
+        f"sample {sample_idx}   f(x) = {final_value:.3f}"
     )
-
-    # Annotate base and final
-    y_top = n_bars - 0.5
-    ax.text(base_value, y_top + 0.15, f"E[f(x)]={base_value:.3f}",
-            ha="center", fontsize=8, color="gray")
-    ax.text(final_value, y_top + 0.15, f"f(x)={final_value:.3f}",
-            ha="center", fontsize=8, color="black", fontweight=500)
-
-    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
-    ax.spines[["top", "right"]].set_visible(False)
+    fig, ax = plt.subplots(figsize=(8, max(5, len(steps) * 0.52 + 2)))
+    _draw_waterfall_on_ax(ax, steps, base_value, final_value, subtitle, kwargs)
     fig.tight_layout()
 
     if out_path is None:
-        out_path = output_dir / f"shap_waterfall_spectra{spectra}_L{level}_s{sample_idx}.png"
+        safe_label = class_label.replace(" ", "_").replace("/", "_")
+        out_path = model_dir / f"shap_waterfall_spectra{spectra}_L{level}_{safe_label}_s{sample_idx}.png"
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"SHAP waterfall saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Interesting sample selector
+# ---------------------------------------------------------------------------
+
+def find_interesting_samples(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        weighted: bool = True,
+        n_per_class: int = 1,
+) -> "pd.DataFrame":
+    """
+    Identifies interesting sample indices from SHAP and prediction outputs
+    for use with shap_waterfall(). For each class, finds:
+
+        1. most_confident   — highest predicted probability for this class
+        2. least_confident  — lowest predicted probability for this class
+        3. most_uncertain   — predicted probability closest to 1/n_classes (decision boundary)
+        4. misclassified    — true label is this class but model predicted another
+                              (requires true labels in evaluation outputs)
+
+    Results saved to: outputs/spectra_{spectra}/level_{level}/interesting_samples.csv
+    Printed as a summary table for easy reference before calling shap_waterfall().
+
+    Args:
+        output_dir:   Root output directory.
+        spectra:      Spectra type label e.g. 'A'.
+        level:        Hierarchy level.
+        weighted:     Use weighted model outputs.
+        n_per_class:  Number of samples to return per category per class (default 1).
+
+    Returns:
+        DataFrame with columns:
+            class_idx, class_label, category, sample_idx, probability
+    """
+    from utils.io import load_json
+
+    suffix = "" if weighted else "_unweighted"
+    model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load training metadata for class names
+    meta_path = model_dir / "training_metadata.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"training_metadata.json not found in {model_dir}")
+    meta = load_json(meta_path)
+    class_map = meta["class_mapping"]
+    class_names = [class_map[str(i)] for i in range(len(class_map))]
+    n_classes = len(class_names)
+
+    # Load SHAP values to get row count and index alignment
+    shap_csv = model_dir / "shap_values.csv"
+    shap_pq = model_dir / "shap_values.parquet"
+    if shap_csv.exists():
+        shap_df = pd.read_csv(shap_csv)
+    elif shap_pq.exists():
+        shap_df = pd.read_parquet(shap_pq)
+    else:
+        raise FileNotFoundError(f"No SHAP values found in {model_dir} — run shap.py first.")
+
+    n_samples = len(shap_df)
+
+    # Load boundary samples CSV for misclassified/uncertain flags
+    bnd_path = model_dir / "boundary_samples.csv"
+    bnd_df = pd.read_csv(bnd_path) if bnd_path.exists() else None
+
+    # Load classification report for per-class probability reconstruction
+    # We need predicted probabilities — reconstruct from SHAP sums as proxy
+    # For exact probabilities, load from a saved pred_proba if available
+    # otherwise approximate: P(class c) ~ softmax of sum of SHAP for class c
+
+    # Build probability matrix (n_samples, n_classes)
+    multiclass_cols = [c for c in shap_df.columns if "__class" in c]
+    is_multiclass = len(multiclass_cols) > 0
+
+    if is_multiclass:
+        # Stack SHAP sums per class as raw scores, apply softmax
+        scores = np.zeros((n_samples, n_classes))
+        for c_idx in range(n_classes):
+            cols = [c for c in multiclass_cols if c.endswith(f"__class{c_idx}")]
+            if cols:
+                scores[:, c_idx] = shap_df[cols].sum(axis=1).values
+        # Softmax
+        exp_s = np.exp(scores - scores.max(axis=1, keepdims=True))
+        proba = exp_s / exp_s.sum(axis=1, keepdims=True)
+        pred_cls = proba.argmax(axis=1)
+    else:
+        # Binary: SHAP sum approximates log-odds; sigmoid to probability
+        feat_cols = [c for c in shap_df.columns if "__class" not in c]
+        log_odds = shap_df[feat_cols].sum(axis=1).values
+        p1 = 1 / (1 + np.exp(-log_odds))
+        proba = np.column_stack([1 - p1, p1])
+        pred_cls = (p1 >= 0.5).astype(int)
+
+    # Decision boundary = 1/n_classes
+    boundary = 1.0 / n_classes
+
+    # Try to get true labels from boundary_samples if available
+    true_labels = None
+    if bnd_df is not None and "true_label" in bnd_df.columns:
+        # boundary_samples has a subset — build a true_label array aligned to shap rows
+        # Note: boundary_samples may be a subset of the test set
+        # We can only use misclassified info if index aligns
+        if len(bnd_df) == n_samples:
+            true_labels = bnd_df["true_label"].values
+
+    records = []
+    for c_idx, cls_name in enumerate(class_names):
+        p_cls = proba[:, c_idx]  # Probability of this class for all samples
+
+        # 1. Most confident — highest P(class)
+        top_idx = np.argsort(p_cls)[::-1][:n_per_class]
+        for idx in top_idx:
+            records.append({
+                "class_idx": c_idx,
+                "class_label": cls_name,
+                "category": "most_confident",
+                "sample_idx": int(idx),
+                "probability": round(float(p_cls[idx]), 4),
+                "predicted_class": class_names[pred_cls[idx]],
+            })
+
+        # 2. Least confident — lowest P(class)
+        bot_idx = np.argsort(p_cls)[:n_per_class]
+        for idx in bot_idx:
+            records.append({
+                "class_idx": c_idx,
+                "class_label": cls_name,
+                "category": "least_confident",
+                "sample_idx": int(idx),
+                "probability": round(float(p_cls[idx]), 4),
+                "predicted_class": class_names[pred_cls[idx]],
+            })
+
+        # 3. Most uncertain — P(class) closest to decision boundary
+        dist_to_boundary = np.abs(p_cls - boundary)
+        unc_idx = np.argsort(dist_to_boundary)[:n_per_class]
+        for idx in unc_idx:
+            records.append({
+                "class_idx": c_idx,
+                "class_label": cls_name,
+                "category": "most_uncertain",
+                "sample_idx": int(idx),
+                "probability": round(float(p_cls[idx]), 4),
+                "predicted_class": class_names[pred_cls[idx]],
+            })
+
+        # 4. Misclassified — true label is this class but predicted as another
+        if true_labels is not None:
+            # Encode true labels to integers
+            true_int = np.array([
+                class_names.index(lbl) if lbl in class_names else -1
+                for lbl in true_labels
+            ])
+            mis_mask = (true_int == c_idx) & (pred_cls != c_idx)
+            mis_idx = np.where(mis_mask)[0]
+            if len(mis_idx) > 0:
+                # Sort by how wrong the model was (lowest P(true class))
+                mis_sorted = mis_idx[np.argsort(p_cls[mis_idx])][:n_per_class]
+                for idx in mis_sorted:
+                    records.append({
+                        "class_idx": c_idx,
+                        "class_label": cls_name,
+                        "category": "misclassified",
+                        "sample_idx": int(idx),
+                        "probability": round(float(p_cls[idx]), 4),
+                        "predicted_class": class_names[pred_cls[idx]],
+                    })
+            else:
+                logger.info(f"No misclassified samples found for class '{cls_name}'.")
+        else:
+            logger.info(
+                "True labels not available — skipping misclassified category. "
+                "Re-run evaluate.py to generate boundary_samples.csv."
+            )
+
+    result_df = pd.DataFrame(records)
+
+    # Save and print
+    out_path = model_dir / "interesting_samples.csv"
+    result_df.to_csv(out_path, index=False)
+    logger.info(f"Interesting samples saved: {out_path}")
+
+    # Pretty print summary
+    print(f"\nInteresting samples — Spectra {spectra}, Level {level}")
+    print(f"Decision boundary = 1/{n_classes} = {boundary:.3f}")
+    print(f"{'Class':<30} {'Category':<20} {'sample_idx':>10} {'P(class)':>10} {'Predicted as'}")
+    print("-" * 90)
+    for _, row in result_df.iterrows():
+        print(
+            f"  {row['class_label']:<28} {row['category']:<20} "
+            f"{row['sample_idx']:>10} {row['probability']:>10.4f} "
+            f"  {row['predicted_class']}"
+        )
+
+    return result_df
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -927,8 +1376,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cross-model feature rank visualisations for the algal turf pipeline."
     )
-    parser.add_argument("--type", choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "both"],
-                        default="both",
+    parser.add_argument("--type",
+                        choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "interesting",
+                                 "both"], default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
                         default=None,
@@ -995,6 +1445,16 @@ def main() -> None:
             spectra_types=args.spectra,
             weighted=weighted,
             shap_col=args.shap_col,
+        )
+
+    if args.type == "interesting":
+        if args.model_a is None:
+            raise ValueError("--model-a is required for interesting samples e.g. --model-a A 3")
+        waterfall_interesting(
+            output_dir=args.output_dir,
+            spectra=args.model_a[0],
+            level=int(args.model_a[1]),
+            weighted=weighted,
         )
 
     if args.type == "beeswarm":
