@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--labelset", type=str, default="pilot")
     parser.add_argument("--spectra", type=str, required=True,
                         help="Spectra type label (A, B, C, or D) — identifies which model to load")
+    parser.add_argument("--no-subsample", action="store_true",
+                        help="Skip turf ROI subsampling (use for held-out data)")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="Output directory for NetCDF files (default: outputs/maps/)")
     return parser.parse_args()
@@ -118,8 +120,8 @@ def make_netcdf(
         "spectra": spectra,
         "level": level,
         "weighted": weighted,
-        "class_mapping": {str(i): c for i, c in enumerate(class_names)},
-        "prop_correct": round(prop_correct, 4),
+        "class_mapping": {str(i): str(c) for i, c in enumerate(class_names)},
+        "prop_correct": float(round(prop_correct, 4)),
         "n_valid_pixels": int((~np.isnan(data_vars[f"prob_{class_names[0]}"].values)).sum()),
         "line_min": int(line_min),
         "line_max": int(line_max),
@@ -129,6 +131,7 @@ def make_netcdf(
     for col in meta_cols:
         if col in roi_df.columns:
             vals = roi_df[col].dropna().unique()
+            # Cast to plain Python str — NetCDF4 does not accept np.str_
             attrs[col] = str(vals[0]) if len(vals) == 1 else [str(v) for v in vals]
 
     ds = xr.Dataset(data_vars, attrs=attrs)
@@ -161,8 +164,9 @@ def main() -> None:
     logger.info("=" * 60)
 
     from config.config import SPLIT, TURF_ALGAE_CLASS, ROI_ID_COLUMN
-    from data.loader import (load_spectra, remap_labels, get_feature_columns,
-                             encode_labels, make_dmatrix, save_roi_mapping)
+    from data.loader import (load_spectra, remap_labels, subsample_turf_rois,
+                             get_feature_columns, encode_labels, make_dmatrix,
+                             )
     from models.trainer import load_model
     from utils.io import make_output_dir
 
@@ -195,13 +199,32 @@ def main() -> None:
     elif label_col in df.columns:
         logger.info(f"Label column '{label_col}' already present — skipping remapping.")
 
+    # Apply subsampling unless --no-subsample is set (e.g. for held-out turf data)
+    if not args.no_subsample:
+        df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
+        logger.info("Turf ROI subsampling applied.")
+    else:
+        logger.info("Turf ROI subsampling skipped (--no-subsample).")
+
     feature_cols = get_feature_columns(df)
 
     # Level 4 dynamic n_classes
     if level == 4:
-        n_rois = df[LABEL_COLUMNS[4]].nunique()
-        LEVEL_CONFIGS[4].n_classes = n_rois
-        save_roi_mapping(df, model_dir)
+        # Read n_classes from roi_label_mapping.csv saved by train.py
+        roi_map_path = model_dir / "roi_label_mapping.csv"
+        if roi_map_path.exists():
+            import pandas as _pd
+            _roi_map = _pd.read_csv(roi_map_path)
+            n_rois = _roi_map["label_level4"].nunique()
+            LEVEL_CONFIGS[4].n_classes = n_rois
+            logger.info(f"Level 4 n_classes loaded from roi_label_mapping.csv: {n_rois}")
+        else:
+            logger.warning(
+                f"roi_label_mapping.csv not found at {roi_map_path} — "
+                f"run train.py first. Falling back to df count."
+            )
+            n_rois = df[LABEL_COLUMNS[4]].nunique()
+            LEVEL_CONFIGS[4].n_classes = n_rois
 
     # Reconstruct label encoder from saved training metadata — works on unseen data
     # that may not have a label column or may have fewer classes than training.
