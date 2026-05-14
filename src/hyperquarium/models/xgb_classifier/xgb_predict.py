@@ -17,6 +17,7 @@ PBS usage:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -84,6 +85,19 @@ def make_netcdf(
 
     data_vars = {}
 
+    if not class_names:
+        raise ValueError(f"class_names is empty for ROI {roi_id} — check LabelEncoder.")
+    if len(proba.shape) > 1 and proba.shape[1] != len(class_names):
+        raise ValueError(
+            f"proba shape {proba.shape} does not match n_classes={len(class_names)} "
+            f"for ROI {roi_id}."
+        )
+    if n_lines <= 0 or n_samples <= 0:
+        raise ValueError(
+            f"Invalid grid dimensions ({n_lines} x {n_samples}) for ROI {roi_id}. "
+            f"Check line/sample columns."
+        )
+
     # One DataArray per class (probability)
     for c_idx, cls_name in enumerate(class_names):
         grid = np.full((n_lines, n_samples), np.nan, dtype=np.float32)
@@ -119,8 +133,8 @@ def make_netcdf(
         "roi_ID": roi_id,
         "spectra": spectra,
         "level": level,
-        "weighted": weighted,
-        "class_mapping": {str(i): str(c) for i, c in enumerate(class_names)},
+        "weighted": str(weighted),
+        "class_mapping": json.dumps({str(i): str(c) for i, c in enumerate(class_names)}),
         "prop_correct": float(round(prop_correct, 4)),
         "n_valid_pixels": int((~np.isnan(data_vars[f"prob_{class_names[0]}"].values)).sum()),
         "line_min": int(line_min),
@@ -263,19 +277,25 @@ def main() -> None:
         else:
             proba = raw.reshape(-1, n_classes)  # shape: (n_pixels, n_classes)
 
-        make_netcdf(
-            roi_id=roi_id,
-            roi_df=roi_df,
-            proba=proba,
-            le=le,
-            n_classes=n_classes,
-            label_col=label_col,
-            meta_cols=meta_cols,
-            spectra=spectra,
-            level=level,
-            weighted=weighted,
-            out_dir=out_dir,
-        )
+        try:
+            make_netcdf(
+                roi_id=roi_id,
+                roi_df=roi_df,
+                proba=proba,
+                le=le,
+                n_classes=n_classes,
+                label_col=label_col,
+                meta_cols=meta_cols,
+                spectra=spectra,
+                level=level,
+                weighted=weighted,
+                out_dir=out_dir,
+            )
+        except Exception as e:
+            import traceback
+            logger.error(f"  ROI {roi_id} failed: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
+            continue
 
         if i % 10 == 0 or i == len(rois):
             logger.info(f"  {i}/{len(rois)} ROIs written")
