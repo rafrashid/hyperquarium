@@ -515,3 +515,362 @@ def run_evaluation(
         plot_confusion_matrix_level2_from_level4(y_test, y_pred, le, out_dir)
 
     return metrics
+
+
+# ---------------------------------------------------------------------------
+# Held-out evaluation summary
+# ---------------------------------------------------------------------------
+
+def summarise_held_out(
+        output_dir: str | Path,
+        spectra_types: list[str] | None = None,
+        levels: list[int] | None = None,
+        weighted: bool = True,
+        held_out_stems: list[str] | None = None,
+        maps_dir: str | Path | None = None,
+        out_path: str | Path | None = None,
+) -> "pd.DataFrame":
+    """
+    Compiles a comparison table of model accuracy on:
+        (a) original test set — from metrics.json
+        (b) held-out turf ROIs — from prop_correct attrs in NetCDF map files
+
+    Reads held-out maps from source-specific subdirectories under maps/ to
+    prevent mixing with main dataset predictions. Each subdirectory is named
+    after the parquet file stem e.g. maps/turf_held_out_seed42_spectraA/.
+
+    Args:
+        output_dir:       Root output directory.
+        spectra_types:    Spectra labels. Defaults to ['A','B','C','D'].
+        levels:           Hierarchy levels. Defaults to [3, 2, 1].
+        weighted:         Use weighted model outputs.
+        held_out_stems:   List of parquet file stems for held-out data.
+                          e.g. ['turf_held_out_seed42_spectraA',
+                                'turf_held_out_seed42_spectraB', ...]
+                          If None, auto-discovers subdirs matching
+                          'turf_held_out*' pattern under maps/.
+        maps_dir:         Root maps directory. Defaults to output_dir / 'maps'.
+        out_path:         Output CSV path.
+
+    Returns:
+        Summary DataFrame.
+    """
+    import json
+    import pandas as pd
+    import xarray as xr
+
+    logger.info("Compiling held-out accuracy summary...")
+
+    output_dir = Path(output_dir)
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    levels = levels or [3, 2, 1]
+    maps_dir = Path(maps_dir) if maps_dir else output_dir / "maps"
+    suffix = "" if weighted else "_unweighted"
+
+    records = []
+
+    for spectra in spectra_types:
+        for level in levels:
+            model_dir = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}"
+            entry_base = {"spectra": spectra, "level": level, "weighted": weighted}
+
+            # ── (a) Original test set accuracy ──────────────────────────────
+            metrics_path = model_dir / "metrics.json"
+            if metrics_path.exists():
+                with open(metrics_path) as f:
+                    m = json.load(f)
+                records.append({
+                    **entry_base,
+                    "source": "original_test_set",
+                    "roi_id": None,
+                    "macro_f1": m.get("macro_f1"),
+                    "prop_correct": None,  # Overall macro F1 used instead
+                    "n_rois": None,
+                })
+            else:
+                logger.warning(f"metrics.json not found: {metrics_path}")
+
+            # ── (b) Held-out turf ROI accuracy from NetCDF maps ──────────────
+            if not maps_dir.exists():
+                continue
+
+            # Find held-out subdirectories for this spectra type
+            if held_out_stems:
+                # Use explicitly provided stems
+                stems = [s for s in held_out_stems if f"spectra{spectra}" in s.lower()
+                         or f"spectra_{spectra}" in s.lower()]
+            else:
+                # Auto-discover subdirs matching turf_held_out* pattern
+                stems = [d.name for d in maps_dir.iterdir()
+                         if d.is_dir() and "turf_held_out" in d.name.lower()
+                         and (f"spectra{spectra}".lower() in d.name.lower()
+                              or f"spectra_{spectra}".lower() in d.name.lower())]
+
+            if not stems:
+                logger.info(f"No held-out map subdirs found for spectra {spectra} in {maps_dir}")
+                continue
+
+            nc_files = []
+            for stem in stems:
+                subdir = maps_dir / stem
+                if subdir.exists():
+                    nc_files.extend(sorted(subdir.glob(f"roi_*_spectra{spectra}_L{level}.nc")))
+
+            if not nc_files:
+                logger.info(f"No NetCDF files found for spectra {spectra} level {level} in held-out subdirs")
+                continue
+
+            roi_props = []
+            for nc_file in nc_files:
+                try:
+                    ds = xr.open_dataset(nc_file)
+                    prop = ds.attrs.get("prop_correct")
+                    roi = ds.attrs.get("roi_ID", nc_file.stem)
+                    ds.close()
+                    if prop is not None and not pd.isna(prop):
+                        roi_props.append({"roi_id": roi, "prop_correct": float(prop)})
+                except Exception as e:
+                    logger.warning(f"Could not read {nc_file.name}: {e}")
+
+            if roi_props:
+                roi_df = pd.DataFrame(roi_props)
+                mean_prop = roi_df["prop_correct"].mean()
+                std_prop = roi_df["prop_correct"].std()
+                n_rois = len(roi_df)
+
+                records.append({
+                    **entry_base,
+                    "source": "held_out_turf_rois",
+                    "roi_id": None,
+                    "macro_f1": None,
+                    "prop_correct": round(mean_prop, 4),
+                    "prop_correct_std": round(std_prop, 4),
+                    "n_rois": n_rois,
+                })
+
+                # Per-ROI rows for detailed inspection
+                for row in roi_props:
+                    records.append({
+                        **entry_base,
+                        "source": "held_out_turf_roi_detail",
+                        "roi_id": row["roi_id"],
+                        "macro_f1": None,
+                        "prop_correct": round(row["prop_correct"], 4),
+                        "prop_correct_std": None,
+                        "n_rois": 1,
+                    })
+
+    summary = pd.DataFrame(records)
+
+    # Print comparison table — original test vs held-out mean
+    print(f"\n{'=' * 70}")
+    print("Held-out accuracy summary")
+    print(f"{'=' * 70}")
+    print(
+        f"{'Spectra':<10} {'Level':<8} {'Test macro F1':>14} {'Held-out mean':>14} {'Held-out std':>13} {'N ROIs':>8}")
+    print("-" * 70)
+
+    for spectra in spectra_types:
+        for level in levels:
+            test_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "original_test_set")]
+            held_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "held_out_turf_rois")]
+
+            f1_str = f"{test_row['macro_f1'].iloc[0]:.4f}" if not test_row.empty and test_row['macro_f1'].iloc[
+                0] is not None else "n/a"
+            prop_str = f"{held_row['prop_correct'].iloc[0]:.4f}" if not held_row.empty else "n/a"
+            std_str = f"{held_row['prop_correct_std'].iloc[0]:.4f}" if not held_row.empty else "n/a"
+            n_str = f"{int(held_row['n_rois'].iloc[0])}" if not held_row.empty else "n/a"
+
+            # Flag potential overfitting
+            flag = ""
+            if f1_str != "n/a" and prop_str != "n/a":
+                drop = float(f1_str) - float(prop_str)
+                if drop > 0.05:
+                    flag = "  <- ⚠ DROP >5%"
+                elif drop > 0.02:
+                    flag = "  <- note"
+
+            print(f"  {spectra:<8} {level:<8} {f1_str:>14} {prop_str:>14} {std_str:>13} {n_str:>8}{flag}")
+
+    print(f"{'=' * 70}\n")
+
+    if out_path is None:
+        out_path = output_dir / "held_out_accuracy_summary.csv"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(out_path, index=False)
+    logger.info(f"Held-out summary saved: {out_path}")
+
+    return summary
+
+
+def summarise_entropy(
+        output_dir: str | Path,
+        spectra_types: list[str] | None = None,
+        levels: list[int] | None = None,
+        weighted: bool = True,
+        held_out_stems: list[str] | None = None,
+        maps_dir: str | Path | None = None,
+        out_path: str | Path | None = None,
+) -> "pd.DataFrame":
+    """
+    Compares mean per-pixel entropy between main dataset maps and held-out
+    turf ROI maps. Higher entropy on held-out ROIs = more uncertainty on
+    unseen data, consistent with within-class variability.
+
+    Reads entropy DataArray from NetCDF files produced by predict.py.
+    Entropy is normalised [0,1] so values are comparable across levels.
+
+    Saves: {output_dir}/entropy_summary.csv
+
+    Args:
+        output_dir:     Root output directory.
+        spectra_types:  Spectra labels. Defaults to ['A','B','C','D'].
+        levels:         Hierarchy levels. Defaults to [3, 2, 1].
+        weighted:       Use weighted model outputs.
+        held_out_stems: Parquet file stems for held-out data. Auto-discovered
+                        from maps/turf_held_out* if None.
+        maps_dir:       Root maps directory. Defaults to output_dir / 'maps'.
+        out_path:       Output CSV path.
+
+    Returns:
+        Summary DataFrame.
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    logger.info("Compiling entropy summary...")
+
+    output_dir = Path(output_dir)
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    levels = levels or [3, 2, 1]
+    maps_dir = Path(maps_dir) if maps_dir else output_dir / "maps"
+
+    def _read_entropy_from_dir(subdir: Path, spectra: str, level: int) -> list[dict]:
+        """Read mean entropy per ROI from all .nc files in a subdir."""
+        rows = []
+        nc_files = sorted(subdir.glob(f"roi_*_spectra{spectra}_L{level}.nc"))
+        for nc_file in nc_files:
+            try:
+                ds = xr.open_dataset(nc_file)
+                if "entropy" not in ds.data_vars:
+                    ds.close()
+                    continue
+                ent = ds["entropy"].values
+                roi_id = ds.attrs.get("roi_ID", nc_file.stem)
+                source = ds.attrs.get("source_file", subdir.name)
+                ds.close()
+                valid = ent[~np.isnan(ent)]
+                if len(valid) > 0:
+                    rows.append({
+                        "roi_id": roi_id,
+                        "source_file": source,
+                        "mean_entropy": float(np.mean(valid)),
+                        "std_entropy": float(np.std(valid)),
+                        "n_pixels": int(len(valid)),
+                    })
+            except Exception as e:
+                logger.warning(f"Could not read {nc_file.name}: {e}")
+        return rows
+
+    records = []
+
+    for spectra in spectra_types:
+        for level in levels:
+
+            # ── Main dataset maps ──────────────────────────────────────────
+            main_subdir = maps_dir / f"spectra_{spectra}"
+            if main_subdir.exists():
+                main_rows = _read_entropy_from_dir(main_subdir, spectra, level)
+                if main_rows:
+                    main_df = pd.DataFrame(main_rows)
+                    records.append({
+                        "spectra": spectra,
+                        "level": level,
+                        "source": "main_dataset",
+                        "n_rois": len(main_df),
+                        "mean_entropy": round(main_df["mean_entropy"].mean(), 4),
+                        "std_entropy": round(main_df["mean_entropy"].std(), 4),
+                        "median_entropy": round(main_df["mean_entropy"].median(), 4),
+                    })
+
+            # ── Held-out maps ──────────────────────────────────────────────
+            if held_out_stems:
+                stems = [s for s in held_out_stems
+                         if f"spectra{spectra}".lower() in s.lower()
+                         or f"spectra_{spectra}".lower() in s.lower()]
+            else:
+                stems = [d.name for d in maps_dir.iterdir()
+                         if d.is_dir() and "turf_held_out" in d.name.lower()
+                         and (f"spectra{spectra}".lower() in d.name.lower()
+                              or f"spectra_{spectra}".lower() in d.name.lower())]
+
+            held_rows = []
+            for stem in stems:
+                subdir = maps_dir / stem
+                if subdir.exists():
+                    held_rows.extend(_read_entropy_from_dir(subdir, spectra, level))
+
+            if held_rows:
+                held_df = pd.DataFrame(held_rows)
+                records.append({
+                    "spectra": spectra,
+                    "level": level,
+                    "source": "held_out_turf",
+                    "n_rois": len(held_df),
+                    "mean_entropy": round(held_df["mean_entropy"].mean(), 4),
+                    "std_entropy": round(held_df["mean_entropy"].std(), 4),
+                    "median_entropy": round(held_df["mean_entropy"].median(), 4),
+                })
+
+    summary = pd.DataFrame(records)
+
+    # ── Print comparison table ─────────────────────────────────────────────
+    print(f"\n{'=' * 72}")
+    print("Entropy summary (normalised [0,1] — higher = more uncertain)")
+    print(f"{'=' * 72}")
+    print(f"{'Spectra':<10} {'Level':<8} {'Main mean':>10} {'Held-out':>10} "
+          f"{'Δ entropy':>10} {'N held':>8}")
+    print("-" * 72)
+
+    for spectra in spectra_types:
+        for level in levels:
+            main_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "main_dataset")]
+            held_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "held_out_turf")]
+
+            main_str = f"{main_row['mean_entropy'].iloc[0]:.4f}" if not main_row.empty else "n/a"
+            held_str = f"{held_row['mean_entropy'].iloc[0]:.4f}" if not held_row.empty else "n/a"
+            n_str = f"{int(held_row['n_rois'].iloc[0])}" if not held_row.empty else "n/a"
+
+            delta_str = "n/a"
+            flag = ""
+            if main_str != "n/a" and held_str != "n/a":
+                delta = float(held_str) - float(main_str)
+                delta_str = f"{delta:+.4f}"
+                if delta > 0.05:
+                    flag = "  <- ⚠ higher uncertainty on held-out"
+                elif delta > 0.02:
+                    flag = "  <- note"
+
+            print(f"  {spectra:<8} {level:<8} {main_str:>10} {held_str:>10} "
+                  f"{delta_str:>10} {n_str:>8}{flag}")
+
+    print(f"{'=' * 72}\n")
+
+    if out_path is None:
+        out_path = output_dir / "entropy_summary.csv"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(out_path, index=False)
+    logger.info(f"Entropy summary saved: {out_path}")
+
+    return summary
