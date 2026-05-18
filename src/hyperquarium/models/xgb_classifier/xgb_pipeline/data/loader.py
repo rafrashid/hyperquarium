@@ -526,6 +526,82 @@ def make_dmatrix(
 # Metadata
 # ---------------------------------------------------------------------------
 
+
+def split_data_cv(
+        df: pd.DataFrame,
+        level: int,
+        fold: int,
+        cfg: "CVConfig | None" = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ROI-grouped stratified train/validation split for one CV fold.
+    All pixels from a given ROI go entirely into train or validation —
+    no pixel-level leakage between folds.
+
+    Uses StratifiedGroupKFold so class distribution is approximately
+    maintained across folds despite the group constraint.
+
+    Note: there is no test set here — the held-out turf ROIs from
+    subsample_turf_rois() serve as the independent test set for CV models.
+
+    Args:
+        df:    Full dataset after remap_labels() and subsample_turf_rois().
+        level: Target label hierarchy level.
+        fold:  Fold index (0 to cfg.n_splits - 1).
+        cfg:   CVConfig instance. Defaults to CV from config.
+
+    Returns:
+        (train_df, val_df) for the specified fold.
+    """
+    from sklearn.model_selection import StratifiedGroupKFold
+    from config.config import CV, LABEL_COLUMNS, ROI_ID_COLUMN
+
+    if cfg is None:
+        cfg = CV
+
+    if fold < 0 or fold >= cfg.n_splits:
+        raise ValueError(
+            f"fold must be in range [0, {cfg.n_splits - 1}], got {fold}"
+        )
+
+    label_col = LABEL_COLUMNS[level]
+    group_col = cfg.group_col
+
+    if group_col not in df.columns:
+        raise KeyError(
+            f"Group column '{group_col}' not found. "
+            f"Check CVConfig.group_col in config.py."
+        )
+
+    # StratifiedGroupKFold operates on arrays, not DataFrames
+    X = df.index.values  # We only need indices for splitting
+    y = df[label_col].values
+    groups = df[group_col].values
+
+    sgkf = StratifiedGroupKFold(n_splits=cfg.n_splits,
+                                shuffle=True,
+                                random_state=cfg.random_seed)
+
+    # Iterate to the requested fold
+    for i, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups)):
+        if i == fold:
+            train_df = df.iloc[train_idx].copy()
+            val_df = df.iloc[val_idx].copy()
+            break
+
+    # Log ROI counts and class distribution
+    train_rois = train_df[group_col].nunique()
+    val_rois = val_df[group_col].nunique()
+    logger.info(
+        f"CV fold {fold}/{cfg.n_splits - 1} — "
+        f"train: {len(train_df):,} rows ({train_rois} ROIs) | "
+        f"val: {len(val_df):,} rows ({val_rois} ROIs)"
+    )
+    _log_class_distribution(train_df, label_col, f"fold{fold}_train")
+    _log_class_distribution(val_df, label_col, f"fold{fold}_val")
+
+    return train_df, val_df
+
 def save_roi_mapping(df: pd.DataFrame, out_dir: Path) -> None:
     """
     Exports the ROI mapping table produced by remap_labels() to CSV.
