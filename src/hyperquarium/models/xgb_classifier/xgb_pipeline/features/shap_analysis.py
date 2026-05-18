@@ -551,6 +551,10 @@ def plot_pca_tsne(
         colours = {p: cmap(i) for i, p in enumerate(parents)}
 
         # Plot each point as its ROI number text, coloured by Level 2 parent
+        # White stroke path effect added for contrast in dense overlapping regions
+        from matplotlib.patheffects import withStroke
+        white_edge = [withStroke(linewidth=1.0, foreground="white")]
+
         for lbl, x, y_ in zip(labels, X_2d[:, 0], X_2d[:, 1]):
             m = roi_pattern.match(lbl)
             if m:
@@ -561,8 +565,9 @@ def plot_pca_tsne(
                 roi_num = "?"
             colour = colours.get(parent, "gray")
             ax.text(x, y_, roi_num, fontsize=5, color=colour,
-                    ha="center", va="center", alpha=0.75,
-                    fontweight="normal", clip_on=False)
+                    ha="center", va="center", alpha=0.9,
+                    fontweight="normal", clip_on=False,
+                    path_effects=white_edge)
 
         # Set axis limits explicitly from data — ax.text() does not auto-update limits
         pad = ((np.nanmax(X_2d[:, 0]) - np.nanmin(X_2d[:, 0])) + (np.nanmax(X_2d[:, 1]) - np.nanmin(X_2d[:, 1]))) * 0.05
@@ -587,17 +592,16 @@ def plot_pca_tsne(
 
         for cls in plot_order:
             mask = labels == cls
-            is_turf = cls == turf_algae_class
             ax.scatter(
                 X_2d[mask, 0], X_2d[mask, 1],
                 c=[colours[cls]],
                 label=f"{cls} (n={mask.sum():,})",
-                s=18 if is_turf else 8,
-                alpha=0.85 if is_turf else 0.35,
-                linewidths=0.6 if is_turf else 0,
-                edgecolors="white" if is_turf else "none",
+                s=8,
+                alpha=0.7,
+                linewidths=0,
+                edgecolors="none",
                 rasterized=True,
-                zorder=10 if is_turf else 1,
+                zorder=2,
             )
         ax.legend(fontsize=8, markerscale=1.5, framealpha=0.7,
                   loc="best", title="Class", title_fontsize=8)

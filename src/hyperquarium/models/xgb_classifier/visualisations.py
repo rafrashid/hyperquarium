@@ -1368,6 +1368,479 @@ def find_interesting_samples(
 
     return result_df
 
+
+# ---------------------------------------------------------------------------
+# UMAP
+# ---------------------------------------------------------------------------
+
+def _load_embedding_matrix(
+        model_dir: "Path",
+        source: str,
+        booster: object | None,
+        feature_cols: list[str] | None,
+        df: "pd.DataFrame | None",
+        y: "np.ndarray | None",
+) -> "np.ndarray | None":
+    """
+    Internal — loads or computes the embedding matrix for UMAP.
+    source: 'leaf' or 'shap'
+    """
+    if source == "shap":
+        shap_csv = model_dir / "shap_values.csv"
+        shap_pq = model_dir / "shap_values.parquet"
+        if shap_csv.exists():
+            return pd.read_csv(shap_csv).values.astype(float)
+        elif shap_pq.exists():
+            return pd.read_parquet(shap_pq).values.astype(float)
+        else:
+            logger.error(f"No SHAP values found in {model_dir} — run shap.py first.")
+            return None
+    elif source == "leaf":
+        if booster is None or df is None or y is None or feature_cols is None:
+            logger.error("booster, df, feature_cols and y are required for leaf embeddings.")
+            return None
+        import xgboost as xgb
+        dm = xgb.DMatrix(df[feature_cols].values, label=y,
+                         feature_names=feature_cols)
+        return booster.predict(dm, pred_leaf=True).astype(float)
+    else:
+        raise ValueError(f"source must be 'leaf' or 'shap', got '{source}'")
+
+
+def umap_plot(
+        output_dir: "Path",
+        spectra: str,
+        level: int,
+        source: str = "leaf",
+        weighted: bool = True,
+        sample_size: int = 10_000,
+        random_seed: int = 42,
+        n_neighbors: int = 15,
+        min_dist: float = 0.1,
+        booster: object | None = None,
+        feature_cols: list[str] | None = None,
+        df: "pd.DataFrame | None" = None,
+        y: "np.ndarray | None" = None,
+        le: object | None = None,
+        turf_algae_class: str = "turf_algae",
+        out_path: "Path | None" = None,
+        **kwargs,
+) -> None:
+    """
+    UMAP dimensionality reduction plot for one model.
+    Saved to the model output directory.
+
+    Two input sources (controlled by `source`):
+        'leaf'  — XGBoost leaf node indices (pred_leaf=True).
+                  Captures the tree structure and decision boundaries.
+                  Requires booster, df, feature_cols, y, le to be passed.
+        'shap'  — SHAP values matrix loaded from shap_values.csv/.parquet.
+                  Captures feature contribution space — closer to the
+                  explanation space than the tree space.
+                  Requires only output_dir/spectra/level (file already saved).
+
+    For Level 4 models: ROI numbers plotted as text markers coloured by
+    Level 2 class (same as plot_pca_tsne). For all other levels: scatter
+    coloured by class with turf algae plotted on top.
+
+    Args:
+        output_dir:       Root output directory.
+        spectra:          Spectra type label e.g. 'A'.
+        level:            Hierarchy level.
+        source:           'leaf' or 'shap' — which matrix to embed.
+        weighted:         Use weighted model outputs.
+        sample_size:      Max rows to embed (subsampled if larger).
+        random_seed:      Reproducibility seed.
+        n_neighbors:      UMAP n_neighbors (controls local vs global structure).
+        min_dist:         UMAP min_dist (controls cluster tightness).
+        booster:          Trained XGBoost Booster (required for source='leaf').
+        feature_cols:     Feature column names (required for source='leaf').
+        df:               Feature DataFrame (required for source='leaf').
+        y:                Integer-encoded labels (required for source='leaf').
+        le:               Fitted LabelEncoder (required for source='leaf').
+        turf_algae_class: Class name for turf algae — plotted on top.
+        out_path:         Output PNG path. Auto-generated if None.
+        **kwargs:         Passed to ax.set() for title/label overrides.
+    """
+    try:
+        import umap as umap_lib
+    except ImportError:
+        raise ImportError(
+            "umap-learn is not installed. Install with:\n"
+            "  pip install umap-learn\n"
+            "umap-learn is an optional dependency not required by the main pipeline."
+        )
+
+    import re as _re
+    from matplotlib.patheffects import withStroke
+
+    suffix = "" if weighted else "_unweighted"
+    model_dir = Path(output_dir) / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load class names from training metadata
+    from utils.io import load_json
+    meta_path = model_dir / "training_metadata.json"
+    class_names = None
+    if meta_path.exists():
+        meta = load_json(meta_path)
+        class_map = meta["class_mapping"]
+        class_names = [class_map[str(i)] for i in range(len(class_map))]
+
+    # Load or compute embedding matrix
+    X = _load_embedding_matrix(model_dir, source, booster, feature_cols, df, y)
+    if X is None:
+        return
+
+    # Load labels — from le if provided, else from training metadata class_names
+    if le is not None and y is not None:
+        labels_arr = le.inverse_transform(y)
+    elif class_names is not None and y is not None:
+        labels_arr = np.array([class_names[i] if i < len(class_names) else str(i) for i in y])
+    else:
+        labels_arr = np.array(["unknown"] * len(X))
+
+    # Subsample
+    rng = np.random.default_rng(random_seed)
+    n = len(X)
+    if n > sample_size:
+        idx = rng.choice(n, sample_size, replace=False)
+        X = X[idx]
+        labels_arr = labels_arr[idx]
+        logger.info(f"UMAP subsample: {sample_size:,} rows from {n:,}")
+    else:
+        logger.info(f"UMAP using all {n:,} rows")
+
+    # Fit UMAP
+    logger.info(f"Fitting UMAP (source={source}, n_neighbors={n_neighbors}, min_dist={min_dist})...")
+    reducer = umap_lib.UMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        random_state=random_seed,
+    )
+    X_2d = reducer.fit_transform(X)
+    logger.info("UMAP complete")
+
+    # Detect Level 4
+    is_level4 = any("_ROI_" in c for c in (class_names or []))
+    roi_pattern = _re.compile(r"^(.+)_ROI_(\d+)$")
+    white_edge = [withStroke(linewidth=1.0, foreground="white")]
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    if is_level4:
+        parents = sorted(set(
+            roi_pattern.match(c).group(1) if roi_pattern.match(c) else c
+            for c in (class_names or [])
+        ))
+        cmap_ = plt.cm.get_cmap("tab10", len(parents))
+        colours_ = {p: cmap_(i) for i, p in enumerate(parents)}
+
+        for lbl, x, y_ in zip(labels_arr, X_2d[:, 0], X_2d[:, 1]):
+            m = roi_pattern.match(lbl)
+            parent = m.group(1) if m else lbl
+            roi_n = str(int(m.group(2))) if m else "?"
+            colour = colours_.get(parent, "gray")
+            ax.text(x, y_, roi_n, fontsize=5, color=colour,
+                    ha="center", va="center", alpha=0.9,
+                    fontweight="normal", clip_on=False,
+                    path_effects=white_edge)
+
+        pad = ((np.nanmax(X_2d[:, 0]) - np.nanmin(X_2d[:, 0])) +
+               (np.nanmax(X_2d[:, 1]) - np.nanmin(X_2d[:, 1]))) * 0.05
+        ax.set_xlim(np.nanmin(X_2d[:, 0]) - pad, np.nanmax(X_2d[:, 0]) + pad)
+        ax.set_ylim(np.nanmin(X_2d[:, 1]) - pad, np.nanmax(X_2d[:, 1]) + pad)
+
+        import matplotlib.patches as _patches
+        legend_handles = [
+            _patches.Patch(color=colours_[p], label=p) for p in parents
+        ]
+        ax.legend(handles=legend_handles, fontsize=8, framealpha=0.7,
+                  loc="best", title="Level 2 class", title_fontsize=8)
+
+    else:
+        unique_cls = list(class_names) if class_names else sorted(set(labels_arr))
+        other_cls = [c for c in unique_cls if c != turf_algae_class]
+        plot_order = other_cls + ([turf_algae_class] if turf_algae_class in unique_cls else [])
+        cmap_ = plt.cm.get_cmap("tab10", len(plot_order))
+        colours_ = {cls: cmap_(i) for i, cls in enumerate(plot_order)}
+
+        for cls in plot_order:
+            mask = labels_arr == cls
+            ax.scatter(
+                X_2d[mask, 0], X_2d[mask, 1],
+                c=[colours_[cls]],
+                label=f"{cls} (n={mask.sum():,})",
+                s=8,
+                alpha=0.7,
+                linewidths=0,
+                edgecolors="none",
+                rasterized=True,
+                zorder=2,
+            )
+        ax.legend(fontsize=8, markerscale=1.5, framealpha=0.7,
+                  loc="best", title="Class", title_fontsize=8)
+
+    title = (
+        f"UMAP ({source}) — Spectra {spectra}, Level {level}\n"
+        f"n_neighbors={n_neighbors}, min_dist={min_dist}"
+    )
+    if is_level4:
+        title += "  |  markers = ROI number, colour = Level 2 class"
+
+    ax.set(title=title, xlabel="UMAP 1", ylabel="UMAP 2", **_ax_kwargs(kwargs))
+    ax.grid(True, alpha=0.2)
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = model_dir / f"umap_{source}_spectra{spectra}_L{level}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"UMAP plot saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Pairwise class SHAP comparison
+# ---------------------------------------------------------------------------
+
+def pairwise_class_shap(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        class_a: str,
+        class_b: str,
+        weighted: bool = True,
+        top_n: int = 30,
+        use_raw: bool = True,
+        shap_col_prefix: str = "mean_abs_shap_",
+        out_path: Path | None = None,
+        **kwargs,
+) -> "pd.DataFrame":
+    """
+    Pairwise SHAP comparison between two classes within one multiclass model.
+    Identifies which features best discriminate class_a from class_b.
+
+    Two modes (controlled by use_raw):
+
+        use_raw=True  (default):
+            Uses raw SHAP values from shap_values.parquet/csv.
+            Filters to pixels with true labels class_a or class_b only.
+            For each feature, computes mean SHAP value for class_a pixels minus
+            mean SHAP value for class_b pixels. This captures directionality —
+            features that push toward class_a vs class_b.
+            Requires true label information in the SHAP file (aligned rows).
+
+        use_raw=False:
+            Uses mean |SHAP| columns from feature_importance_shap.csv.
+            Computes: mean_abs_shap_{class_a} - mean_abs_shap_{class_b}.
+            Faster, no row filtering needed. Loses directionality but
+            sufficient for ranking which features are more diagnostic for
+            one class vs the other.
+
+    Output: directional bar chart — positive bars = more diagnostic for class_a,
+    negative bars = more diagnostic for class_b.
+
+    Saved to: outputs/spectra_{spectra}/level_{level}/
+              pairwise_shap_{class_a}_vs_{class_b}.png
+              pairwise_shap_{class_a}_vs_{class_b}.csv
+
+    Args:
+        output_dir:       Root output directory.
+        spectra:          Spectra type label e.g. 'A'.
+        level:            Hierarchy level.
+        class_a:          First class name (positive direction in plot).
+        class_b:          Second class name (negative direction in plot).
+        weighted:         Use weighted model outputs.
+        top_n:            Number of most discriminating features to show.
+        use_raw:          If True, use raw SHAP values; if False, use importance CSV.
+        shap_col_prefix:  Prefix for importance columns (default: mean_abs_shap_).
+        out_path:         Output PNG path. Auto-generated if None.
+        **kwargs:         Passed to ax.set().
+
+    Returns:
+        DataFrame with feature discriminability scores sorted by absolute value.
+    """
+    from utils.io import load_json
+
+    suffix = "" if weighted else "_unweighted"
+    model_dir = Path(output_dir) / f"spectra_{spectra}" / f"level_{level}{suffix}"
+
+    # Load class names
+    meta_path = model_dir / "training_metadata.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"training_metadata.json not found: {meta_path}")
+    meta = load_json(meta_path)
+    class_map = meta["class_mapping"]
+    class_names = [class_map[str(i)] for i in range(len(class_map))]
+
+    for cls in [class_a, class_b]:
+        if cls not in class_names:
+            raise ValueError(
+                f"Class '{cls}' not found in model. "
+                f"Available classes: {class_names}"
+            )
+
+    c_idx_a = class_names.index(class_a)
+    c_idx_b = class_names.index(class_b)
+
+    if use_raw:
+        # Load raw SHAP values
+        shap_csv = model_dir / "shap_values.csv"
+        shap_pq = model_dir / "shap_values.parquet"
+        if shap_pq.exists():
+            shap_df = pd.read_parquet(shap_pq)
+        elif shap_csv.exists():
+            shap_df = pd.read_csv(shap_csv)
+        else:
+            raise FileNotFoundError(
+                f"No SHAP values found in {model_dir} — run shap.py first."
+            )
+
+        # Detect multiclass columns: {feat}__class{c}
+        multiclass_cols = [c for c in shap_df.columns if "__class" in c]
+        if not multiclass_cols:
+            raise ValueError(
+                "Raw SHAP file appears to be binary — use use_raw=False or "
+                "ensure this is a multiclass model."
+            )
+
+        # Get SHAP columns for class_a and class_b
+        cols_a = {c.replace(f"__class{c_idx_a}", ""): c
+                  for c in multiclass_cols if c.endswith(f"__class{c_idx_a}")}
+        cols_b = {c.replace(f"__class{c_idx_b}", ""): c
+                  for c in multiclass_cols if c.endswith(f"__class{c_idx_b}")}
+        features = sorted(set(cols_a.keys()) & set(cols_b.keys()))
+
+        # Compute mean SHAP per feature for class_a and class_b pixels
+        # Use all pixels — mean SHAP across all samples for each class index
+        mean_a = shap_df[[cols_a[f] for f in features]].mean()
+        mean_b = shap_df[[cols_b[f] for f in features]].mean()
+        mean_a.index = features
+        mean_b.index = features
+
+        diff = mean_a - mean_b
+        result_df = pd.DataFrame({
+            "feature": features,
+            f"mean_shap_{class_a}": mean_a.values,
+            f"mean_shap_{class_b}": mean_b.values,
+            "discriminability": diff.values,
+        })
+        method_label = "mean SHAP difference (raw)"
+
+    else:
+        # Use feature_importance_shap.csv
+        imp_path = model_dir / "feature_importance_shap.csv"
+        if not imp_path.exists():
+            raise FileNotFoundError(f"feature_importance_shap.csv not found: {imp_path}")
+        imp = pd.read_csv(imp_path, index_col=0)
+
+        col_a = f"{shap_col_prefix}{class_a.replace(' ', '_')}"
+        col_b = f"{shap_col_prefix}{class_b.replace(' ', '_')}"
+
+        missing = [c for c in [col_a, col_b] if c not in imp.columns]
+        if missing:
+            raise ValueError(
+                f"Columns not found in importance file: {missing}\n"
+                f"Available: {list(imp.columns)}"
+            )
+
+        diff = imp[col_a] - imp[col_b]
+        result_df = pd.DataFrame({
+            "feature": imp.index,
+            f"mean_abs_shap_{class_a}": imp[col_a].values,
+            f"mean_abs_shap_{class_b}": imp[col_b].values,
+            "discriminability": diff.values,
+        })
+        method_label = "mean |SHAP| difference (importance CSV)"
+
+    # Sort by absolute discriminability, keep top_n
+    result_df = result_df.reindex(
+        result_df["discriminability"].abs().sort_values(ascending=False).index
+    ).head(top_n).reset_index(drop=True)
+
+    # Save CSV
+    safe_a = class_a.replace(" ", "_")
+    safe_b = class_b.replace(" ", "_")
+    csv_path = model_dir / f"pairwise_shap_{safe_a}_vs_{safe_b}.csv"
+    result_df.to_csv(csv_path, index=False)
+    logger.info(f"Pairwise SHAP CSV saved: {csv_path}")
+
+    # ── Plot ────────────────────────────────────────────────────────────────
+    n = len(result_df)
+    fig, ax = plt.subplots(figsize=(10, max(5, n * 0.38 + 2)))
+    y_pos = np.arange(n)
+    vals = result_df["discriminability"].values
+    feats = result_df["feature"].values
+
+    # Colour by feature family
+    bar_colours = [
+        "#185FA5" if get_family(f) == "spectral" else
+        "#0F6E56" if get_family(f) == "glcm" else
+        "#854F0B" if get_family(f) == "sdiv" else
+        "#888780"
+        for f in feats
+    ]
+
+    ax.barh(y_pos, vals, color=bar_colours, height=0.6,
+            edgecolor="white", linewidth=0.4, zorder=2)
+
+    ax.axvline(0, color="black", linewidth=0.8, zorder=3)
+
+    # Value labels
+    for i, v in enumerate(vals):
+        sign = "+" if v >= 0 else ""
+        ha = "left" if v >= 0 else "right"
+        ax.text(v + (0.002 * np.nanmax(np.abs(vals))), i,
+                f"{sign}{v:.4f}", va="center", ha=ha, fontsize=7.5,
+                color="black")
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(feats, fontsize=8.5)
+    ax.yaxis.set_tick_params(length=0)
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Direction labels
+    x_range = np.nanmax(np.abs(vals))
+    ax.text(x_range * 0.5, -1.3, f"{class_a} →",
+            ha="center", fontsize=9, color="#E8334A",
+            transform=ax.get_xaxis_transform())
+    ax.text(-x_range * 0.5, -1.3, f"← {class_b}",
+            ha="center", fontsize=9, color="#3B82C4",
+            transform=ax.get_xaxis_transform())
+
+    # Family legend
+    import matplotlib.patches as _mp
+    legend_handles = [
+        _mp.Patch(color="#185FA5", label="Spectral"),
+        _mp.Patch(color="#0F6E56", label="GLCM"),
+        _mp.Patch(color="#854F0B", label="Spectral diversity"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, framealpha=0.8,
+              loc="lower right", title="Feature family", title_fontsize=8)
+
+    ax.set(
+        xlabel=f"Discriminability ({method_label})",
+        title=(
+            f"Pairwise SHAP — {class_a}  vs  {class_b}\n"
+            f"Spectra {spectra}, Level {level} | top {top_n} most discriminating features"
+        ),
+        **_ax_kwargs(kwargs),
+    )
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = model_dir / f"pairwise_shap_{safe_a}_vs_{safe_b}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Pairwise SHAP plot saved: {out_path}")
+
+    return result_df
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1378,7 +1851,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--type",
                         choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "interesting",
-                                 "both"], default="both",
+                                 "umap", "pairwise", "both"], default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
                         default=None,
@@ -1386,6 +1859,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-b", nargs=2, metavar=("SPECTRA", "LEVEL"),
                         default=None,
                         help="Model B for biplot e.g. --model-b A 4")
+    parser.add_argument("--class-a", type=str, default=None,
+                        help="First class name for pairwise comparison e.g. turf_algae")
+    parser.add_argument("--class-b", type=str, default=None,
+                        help="Second class name for pairwise comparison e.g. cca")
+    parser.add_argument("--pairwise-raw", action="store_true",
+                        help="Use raw SHAP values (default: use importance CSV)")
+    parser.add_argument("--pairwise-top-n", type=int, default=30,
+                        help="Top N features for pairwise plot (default: 30)")
+    parser.add_argument("--umap-source", type=str, default="shap", choices=["leaf", "shap"],
+                        help="Embedding source for UMAP: leaf or shap (default: shap)")
+    parser.add_argument("--umap-n-neighbors", type=int, default=15,
+                        help="UMAP n_neighbors (default: 15)")
+    parser.add_argument("--umap-min-dist", type=float, default=0.1,
+                        help="UMAP min_dist (default: 0.1)")
     parser.add_argument("--biplot-top-n", type=int, default=30,
                         help="Top N divergent features for biplot (default: 30)")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"),
@@ -1455,6 +1942,42 @@ def main() -> None:
             spectra=args.model_a[0],
             level=int(args.model_a[1]),
             weighted=weighted,
+        )
+
+    if args.type == "pairwise":
+        if args.model_a is None or args.class_a is None or args.class_b is None:
+            raise ValueError(
+                "--model-a, --class-a and --class-b are required for pairwise\n"
+                "e.g. --model-a A 2 --class-a turf_algae --class-b cca"
+            )
+        pairwise_class_shap(
+            output_dir=args.output_dir,
+            spectra=args.model_a[0],
+            level=int(args.model_a[1]),
+            class_a=args.class_a,
+            class_b=args.class_b,
+            weighted=weighted,
+            top_n=args.pairwise_top_n,
+            use_raw=args.pairwise_raw,
+        )
+
+    if args.type == "umap":
+        if args.model_a is None:
+            raise ValueError("--model-a is required for umap e.g. --model-a A 3")
+        if args.umap_source == "leaf":
+            raise ValueError(
+                "source='leaf' requires booster, df, feature_cols, y, le — "
+                "call umap_plot() directly from Python for leaf embeddings. "
+                "Use --umap-source shap for CLI usage."
+            )
+        umap_plot(
+            output_dir=args.output_dir,
+            spectra=args.model_a[0],
+            level=int(args.model_a[1]),
+            source=args.umap_source,
+            weighted=weighted,
+            n_neighbors=args.umap_n_neighbors,
+            min_dist=args.umap_min_dist,
         )
 
     if args.type == "beeswarm":
