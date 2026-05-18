@@ -32,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--labelset", type=str, default="pilot")
     parser.add_argument("--spectra", type=str, required=True,
                         help="Spectra type label (A, B, C, or D) — identifies which model to load")
+    parser.add_argument("--compact", action="store_true",
+                        help="Save only predicted_class, max_probability, entropy "
+                             "(skips per-class prob arrays; auto-enabled for Level 4)")
     parser.add_argument("--no-subsample", action="store_true",
                         help="Skip turf ROI subsampling (use for held-out data)")
     parser.add_argument("--out-dir", type=Path, default=None,
@@ -57,6 +60,8 @@ def make_netcdf(
         level: int,
         weighted: bool,
         out_dir: Path,
+        source_file: str = "",
+        compact: bool = False,
 ) -> None:
     """Builds and saves one xr.Dataset for a single ROI."""
     import numpy as np
@@ -98,22 +103,7 @@ def make_netcdf(
             f"Check line/sample columns."
         )
 
-    # One DataArray per class (probability)
-    for c_idx, cls_name in enumerate(class_names):
-        grid = np.full((n_lines, n_samples), np.nan, dtype=np.float32)
-        if proba.ndim == 1:
-            p = proba if c_idx == 1 else 1 - proba
-        else:
-            p = proba[:, c_idx]
-        grid[li, si] = p.astype(np.float32)
-        data_vars[f"prob_{cls_name}"] = xr.DataArray(
-            grid,
-            dims=["line", "sample"],
-            attrs={"long_name": f"Predicted probability — {cls_name}",
-                   "units": "probability"},
-        )
-
-    # Predicted class label (string dtype)
+    # Predicted class label (string dtype) — always saved
     str_grid = np.full((n_lines, n_samples), "", dtype=object)
     str_grid[li, si] = np.array(class_names)[pred_idx]
     data_vars["predicted_class"] = xr.DataArray(
@@ -121,6 +111,49 @@ def make_netcdf(
         dims=["line", "sample"],
         attrs={"long_name": "Predicted class label"},
     )
+
+    # Max probability (confidence of predicted class) — always saved
+    if proba.ndim == 1:
+        max_p = np.where(pred_idx == 1, proba, 1 - proba)
+    else:
+        max_p = proba.max(axis=1)
+    max_grid = np.full((n_lines, n_samples), np.nan, dtype=np.float32)
+    max_grid[li, si] = max_p.astype(np.float32)
+    data_vars["max_probability"] = xr.DataArray(
+        max_grid, dims=["line", "sample"],
+        attrs={"long_name": "Predicted class probability (confidence)",
+               "units": "probability"},
+    )
+
+    # Entropy — normalised by log(n_classes) so range is [0, 1] — always saved
+    if proba.ndim == 1:
+        p_arr = np.column_stack([1 - proba, proba])
+    else:
+        p_arr = proba
+    entropy_vals = -np.sum(p_arr * np.log(p_arr + 1e-10), axis=1)
+    entropy_norm = entropy_vals / np.log(len(class_names) + 1e-10)
+    ent_grid = np.full((n_lines, n_samples), np.nan, dtype=np.float32)
+    ent_grid[li, si] = entropy_norm.astype(np.float32)
+    data_vars["entropy"] = xr.DataArray(
+        ent_grid, dims=["line", "sample"],
+        attrs={"long_name": "Prediction entropy (normalised)",
+               "units": "dimensionless", "range": "[0, 1]"},
+    )
+
+    # Per-class probability arrays — only in non-compact mode
+    if not compact:
+        for c_idx, cls_name in enumerate(class_names):
+            grid = np.full((n_lines, n_samples), np.nan, dtype=np.float32)
+            if proba.ndim == 1:
+                p = proba if c_idx == 1 else 1 - proba
+            else:
+                p = proba[:, c_idx]
+            grid[li, si] = p.astype(np.float32)
+            data_vars[f"prob_{cls_name}"] = xr.DataArray(
+                grid, dims=["line", "sample"],
+                attrs={"long_name": f"Predicted probability — {cls_name}",
+                       "units": "probability"},
+            )
 
     # Proportion correct (if true labels available)
     prop_correct = np.nan
@@ -136,7 +169,8 @@ def make_netcdf(
         "weighted": str(weighted),
         "class_mapping": json.dumps({str(i): str(c) for i, c in enumerate(class_names)}),
         "prop_correct": float(round(prop_correct, 4)),
-        "n_valid_pixels": int((~np.isnan(data_vars[f"prob_{class_names[0]}"].values)).sum()),
+        "n_valid_pixels": int((~np.isnan(data_vars["max_probability"].values)).sum()),
+        "source_file": str(source_file),
         "line_min": int(line_min),
         "line_max": int(line_max),
         "sample_min": int(sample_min),
@@ -195,8 +229,12 @@ def main() -> None:
         logger.error(f"Model not found: {model_path} — run train.py first.")
         sys.exit(1)
 
-    out_dir = Path(args.out_dir) if args.out_dir else Path(OUTPUT_DIR) / "maps"
+    # Subdirectory named after source parquet file — prevents mixing main and held-out maps
+    source_stem = data_path.stem
+    base_maps = Path(args.out_dir) if args.out_dir else Path(OUTPUT_DIR) / "maps"
+    out_dir = base_maps / source_stem
     out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {out_dir}")
 
     # ---- Load full dataset (no split — predict all pixels) ----------------
     df = load_spectra(data_path)
@@ -259,6 +297,11 @@ def main() -> None:
     meta_cols = [c for c in ["scan_ID", "exposure", "n_valid_pixels", "dataset"]
                  if c in df.columns]
 
+    # Level 4 always compact (too many classes); otherwise follow --compact flag
+    use_compact = args.compact or (level == 4)
+    if use_compact:
+        logger.info("Compact mode: saving predicted_class, max_probability, entropy only.")
+
     # ---- Predict and reproject per ROI ------------------------------------
     roi_col = ROI_ID_COLUMN
     rois = df[roi_col].unique()
@@ -290,6 +333,8 @@ def main() -> None:
                 level=level,
                 weighted=weighted,
                 out_dir=out_dir,
+                source_file=source_stem,
+                compact=use_compact,
             )
         except Exception as e:
             import traceback
