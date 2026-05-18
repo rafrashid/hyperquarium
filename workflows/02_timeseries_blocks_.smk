@@ -244,7 +244,6 @@ rule ts_spect_var_trio:
         mean_spectrum, clean_spectra, n_clean_pixels = my_utils.get_mean_spectrum(data_array)
 
         spectral_var = processing.calc_spectral_var_trio(clean_spectra,mean_spectrum)
-        # results = processing.calc_spectral_var_trio(clean_spectra,mean_spectrum)
 
         metrics = ['SAM', 'SID', 'SCM']
 
@@ -627,6 +626,7 @@ rule ts_spectdiv_plots:
             del scores
             gc.collect()
 
+
 rule timeseries_blocks_extract:
     input:
         "data/interim/02_seasim_ts/03A_norm_refl-blocks-summarised.csv",
@@ -634,18 +634,27 @@ rule timeseries_blocks_extract:
             roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
                 label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_block=SS_BLOCKS),
             refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
-        expand("data/interim/02_seasim_ts/{refl_type}_2nd_dx/{roi_path}_2nd_dx.jpg",
+        expand("data/interim/02_seasim_ts/{refl_type}/{roi_path}.nc",
             roi_path=expand("{label}/{roi_scan_ID}/{roi_block}",zip,
-                label=TS_LABELS,roi_scan_ID=TS_SCANS,roi_block=TS_BLOCKS),
+                label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_block=SS_BLOCKS),
+            refl_type=['03A_norm_refl', '03A_norm_refl_2nd_dx',
+                       '03B_L2_norm_refl', '03B_L2_norm_refl_2nd_dx']),
+        # expand("data/interim/02_seasim_ts/{refl_type}/04A_spec_var/{roi_path}_trio_distr.jpg",
+        #     roi_path=expand("{label}/{roi_scan_ID}/{roi_block}", zip,
+        #         label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_block=SS_BLOCKS),
+        #     refl_type=['03A_norm_refl','03A_norm_refl_2nd_dx',
+        #                '03B_L2_norm_refl','03B_L2_norm_refl_2nd_dx']),
+        expand("data/interim/02_seasim_ts/{refl_type}/04B_PCA/{roi_path}_PCA_scores.nc",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
+                label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_ID=SS_ROIS),
             refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
-    # expand("data/interim/02_seasim_ts/{refl_type}/04A_spec_var/{roi_path}_trio_distr.jpg",
-    #     roi_path=expand("{label}/{roi_scan_ID}/{roi_block}", zip,
-    #         label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_block=SS_BLOCKS),
-    #     refl_type=['03A_norm_refl','03A_norm_refl_2nd_dx',
-    #                '03B_L2_norm_refl','03B_L2_norm_refl_2nd_dx']),
-    # expand("data/interim/02_seasim_ts/{refl_type}/04B_PCA/{roi_path}_PCA_scores.nc",
-    #     roi_path=expand("{label}/{roi_scan_ID}/{roi_block}", zip,
-    #         label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_block=SS_BLOCKS),
-    #     refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        expand("data/interim/02_seasim_ts/{refl_type}/04B_PCA/{roi_path}_PCA_var_contr.png",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
+                label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_ID=SS_ROIS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        expand("data/interim/02_seasim_ts/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
+                label=SS_LABELS,roi_scan_ID=SS_SCANS,roi_ID=SS_ROIS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
 
-ruleorder: ts_spectral_PCA > ts_spect_var_trio_distr > ts_spect_var_maps > ts_spect_var_trio > ts_plot_second_deriv > ts_second_deriv > ts_L2norm_refl
+ruleorder: ts_spectral_PCA > ts_plot_second_deriv > ts_second_deriv > ts_L2norm_refl

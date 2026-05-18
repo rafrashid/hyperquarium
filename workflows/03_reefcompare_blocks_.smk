@@ -684,11 +684,11 @@ rule reefcompare_blocks_extract:
         #                '03B_L2_norm_refl', '03B_L2_norm_refl_2nd_dx']),
         expand("data/interim/03_reefcompare/{refl_type}/04B_PCA/{roi_path}_PCA_var_contr.png",
             roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
-                label=MODEL_LABELS,roi_scan_ID=MODEL_SCANS,roi_ID=MODEL_ROIS),
+                label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_ID=RC_ROIS),
             refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
         expand("data/interim/03_reefcompare/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
             roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
-                label=MODEL_LABELS,roi_scan_ID=MODEL_SCANS,roi_ID=MODEL_ROIS),
+                label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_ID=RC_ROIS),
             refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
 
 ruleorder: rc_spectral_PCA > rc_spect_var_trio_distr > rc_spect_var_maps > rc_spect_var_trio > rc_plot_second_deriv > rc_second_deriv > rc_L2norm_refl
