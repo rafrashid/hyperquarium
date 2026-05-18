@@ -173,6 +173,21 @@ SPLIT = SplitConfig()
 
 
 # ---------------------------------------------------------------------------
+# Cross-validation config (ROI-grouped StratifiedGroupKFold)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CVConfig:
+    n_splits: int = 5  # Number of CV folds
+    random_seed: int = 42
+    group_col: str = "roi_ID"  # Column to group by — all pixels from one ROI
+    # go entirely to one fold
+
+
+CV = CVConfig()
+
+
+# ---------------------------------------------------------------------------
 # XGBoost hyperparameters
 # ---------------------------------------------------------------------------
 
