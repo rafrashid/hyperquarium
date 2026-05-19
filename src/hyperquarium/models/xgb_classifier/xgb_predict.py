@@ -155,11 +155,15 @@ def make_netcdf(
                        "units": "probability"},
             )
 
-    # Proportion correct (if true labels available)
+    # Proportion correct (if true labels available and known to the encoder)
     prop_correct = np.nan
     if label_col in roi_df.columns:
-        true_encoded = le.transform(roi_df[label_col].values)
-        prop_correct = float((pred_idx == true_encoded).mean())
+        try:
+            true_encoded = le.transform(roi_df[label_col].values)
+            prop_correct = float((pred_idx == true_encoded).mean())
+        except ValueError:
+            # Labels unseen during training (e.g. held-out Level 4 ROIs)
+            prop_correct = np.nan
 
     # Metadata attrs
     attrs = {
