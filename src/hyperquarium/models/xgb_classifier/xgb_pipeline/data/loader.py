@@ -750,3 +750,140 @@ def subsample_turf_rois(
         logger.info(f"Held-out turf ROIs saved: {held_out_path}")
 
     return out
+
+def sample_held_out_rois(
+        df: pd.DataFrame,
+        held_out_frac: float = 0.20,
+        random_seed: int = 42,
+        spectra: str | None = None,
+        min_rois_to_hold: int = 1,
+) -> pd.DataFrame:
+    """
+    Holds out a stratified fraction of ROIs per Level 2 class for use as
+    a spatially-independent prediction validation set (via predict.py).
+
+    Subsampling is at the ROI level — all pixels belonging to a held-out ROI
+    are removed from the returned DataFrame. Stratification is by Level 2 class
+    so each class loses approximately the same fraction of ROIs.
+
+    Unlike subsample_turf_rois(), this function is class-agnostic: it applies
+    equally to all classes and does not assume any dominant class. It is
+    appropriate when class balance is roughly even or when no class-specific
+    balancing is required.
+
+    Classes with fewer ROIs than would yield at least `min_rois_to_hold` after
+    applying `held_out_frac` are skipped (no ROIs held out for that class),
+    with a warning logged. This protects rare classes (e.g. bare: 3 ROIs) from
+    losing training coverage entirely.
+
+    Held-out ROIs are saved to:
+        data/held_out_seed{seed}_frac{frac}_spectra{X}.parquet
+
+    Args:
+        df:                 DataFrame after remap_labels() has been called.
+        held_out_frac:      Fraction of ROIs per Level 2 class to hold out.
+                            Must be in (0, 1). Default 0.15.
+        random_seed:        Random seed for reproducibility.
+        spectra:            Spectra type label e.g. 'A' — included in the
+                            held-out filename. If None, no spectra suffix is added.
+        min_rois_to_hold:   Minimum number of ROIs that must be held out for a
+                            class to participate. Classes below this threshold
+                            are skipped. Default 1.
+
+    Returns:
+        DataFrame with held-out ROIs removed (training-ready subset).
+
+    Raises:
+        KeyError:    If Level 2 label column or ROI column is missing.
+        ValueError:  If held_out_frac is not in (0, 1).
+    """
+    if not (0 < held_out_frac < 1):
+        raise ValueError(f"held_out_frac must be in (0, 1), got {held_out_frac}")
+
+    level2_col = LABEL_COLUMNS[2]
+    level4_col = LABEL_COLUMNS[4]
+
+    # Use level4 label (ROI-level) if available, otherwise fall back to raw roi_ID
+    roi_col = level4_col if level4_col in df.columns else ROI_ID_COLUMN
+
+    for col in (level2_col, roi_col):
+        if col not in df.columns:
+            raise KeyError(
+                f"Required column '{col}' not found. "
+                f"Ensure remap_labels() has been called before sample_held_out_rois()."
+            )
+
+    rng = np.random.default_rng(random_seed)
+    held_out_roi_sets = []
+
+    # Count ROIs per Level 2 class
+    roi_counts = (
+        df.groupby(level2_col)[roi_col]
+        .nunique()
+        .sort_values(ascending=False)
+    )
+    logger.info(
+        f"sample_held_out_rois — held_out_frac={held_out_frac:.0%} | "
+        f"seed={random_seed} | stratified by {level2_col}"
+    )
+    logger.info("ROI counts per Level 2 class (before holdout):")
+    for cls, n in roi_counts.items():
+        logger.info(f"    {cls:<30} {n:>4} ROIs")
+
+    for cls in roi_counts.index:
+        class_rois = df[df[level2_col] == cls][roi_col].unique()
+        n_rois = len(class_rois)
+        n_hold = max(int(round(n_rois * held_out_frac)), 0)
+
+        if n_hold < min_rois_to_hold:
+            logger.warning(
+                f"    {cls}: only {n_rois} ROIs — holding out {n_hold} would be below "
+                f"min_rois_to_hold={min_rois_to_hold}. Skipping holdout for this class."
+            )
+            continue
+
+        selected = rng.choice(class_rois, size=n_hold, replace=False)
+        held_out_roi_sets.extend(selected.tolist())
+        logger.info(
+            f"    {cls:<30} {n_rois:>4} ROIs — holding out {n_hold} "
+            f"({n_hold / n_rois * 100:.0f}%)"
+        )
+
+    if not held_out_roi_sets:
+        logger.warning(
+            "No ROIs were selected for holdout — all classes fell below "
+            "min_rois_to_hold. Returning full DataFrame unchanged."
+        )
+        return df
+
+    held_out_set = set(held_out_roi_sets)
+    mask_held = df[roi_col].isin(held_out_set)
+    out = df[~mask_held].copy()
+    held_out = df[mask_held].copy()
+
+    logger.info(
+        f"Hold-out complete — {len(held_out_roi_sets)} ROIs held out across "
+        f"{held_out[level2_col].nunique()} classes"
+    )
+    logger.info(
+        f"Rows retained : {len(out):,} of {len(df):,} "
+        f"({len(out) / len(df) * 100:.1f}%)"
+    )
+    logger.info(
+        f"Rows held out : {len(held_out):,} "
+        f"({len(held_out) / len(df) * 100:.1f}%)"
+    )
+
+    # Save held-out set for use with predict.py
+    if len(held_out) > 0:
+        from config.config import DATA_DIR
+        frac_tag = f"{int(held_out_frac * 100)}pct"
+        spectra_suffix = f"_spectra{spectra}" if spectra is not None else ""
+        held_out_path = (
+                Path(DATA_DIR)
+                / f"held_out_{frac_tag}_seed{random_seed}{spectra_suffix}.parquet"
+        )
+        held_out.to_parquet(held_out_path, index=False)
+        logger.info(f"Held-out ROIs saved: {held_out_path}")
+
+    return out
