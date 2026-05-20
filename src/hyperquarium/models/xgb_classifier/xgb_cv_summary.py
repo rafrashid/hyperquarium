@@ -4,7 +4,7 @@ Aggregates cross-validation results across all folds for one model.
 Computes mean/std of validation metrics and averaged SHAP feature importance.
 
 Usage:
-    python3 xgb_cv_summary.py <spectra> <level> [--weighted true] [--labelset pilot]
+    python3 xgb_cv_summary.py <spectra> <level> [--weighted true]
 
 Examples:
     python3 xgb_cv_summary.py A 3
