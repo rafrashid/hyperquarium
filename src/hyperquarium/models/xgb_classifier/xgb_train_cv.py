@@ -98,12 +98,14 @@ def main() -> None:
     # ---- CV split ---------------------------------------------------------
     train_df, val_df = split_data_cv(df, level, fold)
 
-    # Fit encoder on train only — apply to val
+    # Fit encoder on FULL dataset — ensures all classes are known even if
+    # some appear only in val fold (can happen with rare classes in Level 4)
     from sklearn.preprocessing import LabelEncoder
     from config.config import LABEL_COLUMNS
     label_col = LABEL_COLUMNS[level]
     le = LabelEncoder()
-    y_train = le.fit_transform(train_df[label_col])
+    le.fit(df[label_col])
+    y_train = le.transform(train_df[label_col])
     y_val = le.transform(val_df[label_col])
 
     # Save fold metadata
