@@ -49,8 +49,12 @@ GLCM_FEATURES = ["contrast", "energy", "entropy", "homogeneity"]
 RESAMPLE_METHOD: str = "bilinear"
 BLOCK_SIZE: str = "1x1"
 
-# Spectral diversity variables to extract from each run Dataset
-# Set to None to extract ALL variables automatically
+# Spectral diversity variables to extract from each run Dataset.
+# Set to None to extract ALL variables automatically.
+# NOTE: 'alpha_sdiv' and 'beta_lcsd' receive automatic normalisation:
+#   alpha_sdiv → sdiv_alpha_local_plot_{fact}   (alpha_sdiv / gamma_sdiv)
+#   beta_lcsd  → sdiv_beta_local_plot_{fact}    (beta_lcsd * beta_sdiv / gamma_sdiv)
+# A constant gamma column sdiv_gamma_plot_{fact} is also added per run regardless of this setting.
 SPECDIV_VARS: list[str] | None = None
 
 # Maximum allowed difference between line and sample dimensions.
@@ -287,16 +291,23 @@ def load_specdiv(roi_id: str, data_dir: Path,
             ds.close()
             continue
 
+        gamma_sdiv = ds.attrs.get("gamma_sdiv")
+        beta_sdiv = ds.attrs.get("beta_sdiv")
+
+        if gamma_sdiv is None or np.isnan(gamma_sdiv) or gamma_sdiv == 0:
+            print(f"  [WARN] {roi_id} run {run_num}: missing or zero gamma_sdiv — skipping run")
+            ds.close()
+            continue
+
         vars_to_use = SPECDIV_VARS if SPECDIV_VARS else list(ds.data_vars)
         frames = []
         for var in vars_to_use:
             if var not in ds:
                 continue
-            col = f"sdiv_{var}_plot_{fact}"
+
             da = ds[var]
 
-            # Reproject coarser specdiv grid onto spectrum (line, sample) coords.
-            # Use a Dataset of coords to get paired interpolation (not outer product).
+            # Reproject coarser specdiv grid onto spectrum pixel coords
             da_reproj = da.interp(
                 coords={
                     "line": xr.DataArray(target_lines, dims="pixel"),
@@ -304,13 +315,42 @@ def load_specdiv(roi_id: str, data_dir: Path,
                 },
                 method="linear"
             )
-            sub = (da_reproj
+
+            if var == "alpha_sdiv":
+                # Normalise by gamma: alpha_local = alpha_sdiv / gamma_sdiv
+                col = f"sdiv_alpha_local_plot_{fact}"
+                values = da_reproj.values / gamma_sdiv
+
+            elif var == "beta_lcsd":
+                # Two-step: beta_local = (beta_lcsd * beta_sdiv) / gamma_sdiv
+                if beta_sdiv is None or np.isnan(beta_sdiv):
+                    print(f"  [WARN] {roi_id} run {run_num}: missing beta_sdiv — skipping beta_lcsd")
+                    continue
+                col = f"sdiv_beta_local_plot_{fact}"
+                values = (da_reproj.values * beta_sdiv) / gamma_sdiv
+
+            else:
+                # All other variables (beta_lcss, alpha_fcsd_*, etc.) pass through unchanged
+                col = f"sdiv_{var}_plot_{fact}"
+                values = da_reproj.values
+
+            reproj_da = xr.DataArray(values, dims=["pixel"])
+            sub = (reproj_da
                    .to_dataframe(name=col)
                    .reset_index(drop=True)
                    .assign(line=target_lines.astype(int),
                            sample=target_samples.astype(int)))
             sub = sub.dropna(subset=[col])
             frames.append(sub.set_index(["line", "sample"])[[col]])
+
+        # Add gamma as a constant column for all valid pixels in this run
+        gamma_col = f"sdiv_gamma_plot_{fact}"
+        gamma_frame = pd.DataFrame({
+            "line": target_lines.astype(int),
+            "sample": target_samples.astype(int),
+            gamma_col: gamma_sdiv,
+        }).set_index(["line", "sample"])
+        frames.append(gamma_frame)
 
         ds.close()
 

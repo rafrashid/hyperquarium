@@ -863,7 +863,9 @@ def specdiv_batch(ds: xr.Dataset,
                                        "fact": p["fact"],
                                        "prop_threshold": p["prop_threshold"],
                                        "n_iter": p["n_iter"],
-                                       "failed": 0})
+                                       "failed": 0,
+                                       "gamma_sdiv": float(res["sdiv"]["gamma"]),
+                                       "beta_sdiv": float(res["sdiv"]["beta"])})
             run_datasets[run_label] = run_ds
 
         except Exception as e:
@@ -884,7 +886,8 @@ def specdiv_batch(ds: xr.Dataset,
                                     dims=["line", "sample"])
             empty_attrs = {"run": run_idx + 1, "fact": p["fact"],
                            "prop_threshold": p["prop_threshold"],
-                           "n_iter": p["n_iter"], "failed": 1, "error": str(e)}
+                           "n_iter": p["n_iter"], "failed": 1, "error": str(e),
+                           "gamma_sdiv": np.nan, "beta_sdiv": np.nan}
             stat_names = ["alpha_sdiv", "beta_lcsd", "beta_lcss"]
             _pc_vars = pc_vars if pc_vars is not None else list(ds.data_vars)
             stat_names += [f"alpha_fcsd_{v}" for v in _pc_vars]
