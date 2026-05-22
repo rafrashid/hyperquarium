@@ -152,8 +152,11 @@ def compute_metrics(
                 logger.warning(f"Skipping AUC-PR for '{names_present[i]}' — class index {class_idx} "
                                f"out of range for proba array with {trained_n_classes} columns.")
 
+    pixel_accuracy = float(np.mean(y_true == y_pred))
+
     metrics = {
         "macro_f1": round(macro_f1, 5),
+        "pixel_accuracy": round(pixel_accuracy, 5),
         "average_precision_per_class": {k: round(v, 5) for k, v in ap_scores.items()},
         "per_class_f1": {
             class_names[i]: round(
@@ -163,7 +166,7 @@ def compute_metrics(
         },
     }
     save_json(metrics, out_dir / "metrics.json")
-    logger.info(f"Macro F1: {macro_f1:.4f}")
+    logger.info(f"Macro F1: {macro_f1:.4f}  Pixel accuracy: {pixel_accuracy:.4f}")
     return metrics
 
 
