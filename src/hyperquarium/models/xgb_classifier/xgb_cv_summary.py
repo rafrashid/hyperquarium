@@ -74,7 +74,7 @@ def main() -> None:
         with open(meta_path) as f:
             meta = json.load(f)
 
-        row = {"fold": fold, "macro_f1": m.get("macro_f1")}
+        row = {"fold": fold, "macro_f1": m.get("macro_f1"), "pixel_accuracy": m.get("pixel_accuracy")}
         for cls, f1 in m.get("per_class_f1", {}).items():
             row[f"f1_{cls}"] = f1
         for cls, ap in m.get("average_precision_per_class", {}).items():
@@ -99,10 +99,10 @@ def main() -> None:
 
     logger.info(
         f"Validation metrics across {len(metrics_records)} folds:\n"
-        f"  macro_f1  mean={metrics_df['macro_f1'].mean():.4f}  "
-        f"std={metrics_df['macro_f1'].std():.4f}  "
-        f"min={metrics_df['macro_f1'].min():.4f}  "
-        f"max={metrics_df['macro_f1'].max():.4f}"
+        f"  macro_f1       mean={metrics_df['macro_f1'].mean():.4f}  "
+        f"std={metrics_df['macro_f1'].std():.4f}\n"
+        f"  pixel_accuracy mean={metrics_df['pixel_accuracy'].mean():.4f}  "
+        f"std={metrics_df['pixel_accuracy'].std():.4f}"
     )
     logger.info(
         f"  best_score mean={np.nanmean(best_scores):.5f}  "
@@ -142,16 +142,19 @@ def main() -> None:
     print(f"\n{'=' * 60}")
     print(f"CV Summary — Spectra {spectra}, Level {level}")
     print(f"{'=' * 60}")
-    print(f"{'Fold':<6} {'Macro F1':>10} {'Best iter':>10} {'Best score':>12}")
-    print("-" * 42)
+    print(f"{'Fold':<6} {'Macro F1':>10} {'Pix Acc':>10} {'Best iter':>10} {'Best score':>12}")
+    print("-" * 52)
     for _, row in metrics_df.iterrows():
-        print(f"  {int(row['fold']):<4} {row['macro_f1']:>10.4f} "
+        pix = f"{row['pixel_accuracy']:.4f}" if row.get('pixel_accuracy') is not None else "   n/a"
+        print(f"  {int(row['fold']):<4} {row['macro_f1']:>10.4f} {pix:>10} "
               f"{int(row['best_iteration']):>10} {row['best_score']:>12.5f}")
-    print("-" * 42)
+    print("-" * 52)
     print(f"  {'MEAN':<4} {metrics_df['macro_f1'].mean():>10.4f} "
+          f"{metrics_df['pixel_accuracy'].mean():>10.4f} "
           f"{metrics_df['best_iteration'].mean():>10.1f} "
           f"{metrics_df['best_score'].mean():>12.5f}")
     print(f"  {'STD':<4} {metrics_df['macro_f1'].std():>10.4f} "
+          f"{metrics_df['pixel_accuracy'].std():>10.4f} "
           f"{metrics_df['best_iteration'].std():>10.1f} "
           f"{metrics_df['best_score'].std():>12.5f}")
     print(f"{'=' * 60}\n")

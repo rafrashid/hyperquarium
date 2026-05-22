@@ -1841,6 +1841,862 @@ def pairwise_class_shap(
 
     return result_df
 
+
+# ---------------------------------------------------------------------------
+# CV vs held-out accuracy paired chart
+# ---------------------------------------------------------------------------
+
+def cv_vs_held_out_chart(
+        output_dir: Path,
+        spectra_types: list[str] = None,
+        levels: list[int] = None,
+        weighted: bool = True,
+        held_out_pattern: str = "held_out",
+        cv_metric: str = "pixel_accuracy",
+        out_path: Path | None = None,
+        **kwargs,
+) -> pd.DataFrame | None:
+    """
+    Paired dot chart comparing three accuracy estimates per model:
+        • CV mean pixel accuracy ± 1 std (across 5 folds) — or macro_f1 if specified
+        • Single-model test macro F1 (pixel-level 1% test set)
+        • Held-out ROI mean prop_correct ± 1 std (novel ROIs, most independent)
+
+    Each model (spectra × level combination) appears as a row. The three
+    estimates are plotted as dots on a shared x-axis [0, 1], connected by a
+    light horizontal line so the eye can follow the generalisation drop from
+    test → held-out.
+
+    Models are grouped by level (separated by horizontal rules) and ordered
+    A→B→C→D within each level.
+
+    Data sources
+    ────────────
+    CV        : outputs/spectra_{X}/level_{N}_cv[_unweighted]/summary/metrics_summary.csv
+                  rows index = ["mean","std","min","max"], column = cv_metric
+    Test F1   : outputs/spectra_{X}/level_{N}[_unweighted]/metrics.json  → macro_f1
+    Held-out  : outputs/maps/{dir matching held_out_pattern}/  → prop_correct NetCDF attr
+                  dirs also filtered to contain spectra label e.g. "spectraA"
+
+    Args:
+        output_dir:       Root output directory (e.g. Path('outputs')).
+        spectra_types:    List of spectra labels. Defaults to ['A','B','C','D'].
+        levels:           List of levels to include. Defaults to [1, 2, 3, 4].
+        weighted:         Whether to use weighted model outputs.
+        held_out_pattern: Substring to match held-out map subdirectory names.
+                          Defaults to 'held_out' (matches both old 'turf_held_out'
+                          and new 'held_out_*' naming conventions).
+        cv_metric:        Which metric to read from metrics_summary.csv for the CV
+                          estimate. Use 'pixel_accuracy' (default) for a fair
+                          comparison with held-out prop_correct, or 'macro_f1' to
+                          show the class-averaged metric.
+        out_path:         Output PNG path. Auto-generated if None.
+        **kwargs:         Forwarded to ax.set() via _ax_kwargs().
+
+    Returns:
+        DataFrame of all collected values (useful for further analysis), or
+        None if no data was found.
+    """
+    import json
+    try:
+        import xarray as xr
+        _has_xr = True
+    except ImportError:
+        _has_xr = False
+        logger.warning("xarray not available — held-out prop_correct cannot be loaded.")
+
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    levels = levels or [1, 2, 3]
+    suffix = "" if weighted else "_unweighted"
+    maps_dir = output_dir / "maps"
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _load_cv_metric(spectra: str, level: int, metric: str = "pixel_accuracy") -> tuple[float, float] | tuple[
+        None, None]:
+        """Returns (mean, std) for the requested metric from CV summary, or (None, None)."""
+        p = (output_dir / f"spectra_{spectra}"
+             / f"level_{level}_cv{suffix}" / "summary" / "metrics_summary.csv")
+        if not p.exists():
+            logger.debug(f"CV summary missing: {p}")
+            return None, None
+        df = pd.read_csv(p, index_col=0)
+        if metric not in df.columns:
+            logger.warning(f"Metric '{metric}' not in {p} — available: {list(df.columns)}")
+            return None, None
+        try:
+            return float(df.loc["mean", metric]), float(df.loc["std", metric])
+        except KeyError:
+            return None, None
+
+    def _load_cv_f1(spectra: str, level: int) -> tuple[float, float] | tuple[None, None]:
+        """Returns (mean_f1, std_f1) from CV summary, or (None, None)."""
+        p = (output_dir / f"spectra_{spectra}"
+             / f"level_{level}_cv{suffix}" / "summary" / "metrics_summary.csv")
+        if not p.exists():
+            logger.debug(f"CV summary missing: {p}")
+            return None, None
+        df = pd.read_csv(p, index_col=0)
+        try:
+            return float(df.loc["mean", "macro_f1"]), float(df.loc["std", "macro_f1"])
+        except KeyError:
+            logger.warning(f"macro_f1 not found in {p}")
+            return None, None
+
+    def _load_test_f1(spectra: str, level: int) -> float | None:
+        """Returns single-model test macro_f1 from metrics.json."""
+        p = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}" / "metrics.json"
+        if not p.exists():
+            logger.debug(f"metrics.json missing: {p}")
+            return None
+        with open(p) as f:
+            m = json.load(f)
+        val = m.get("macro_f1")
+        return float(val) if val is not None else None
+
+    def _load_held_out(spectra: str) -> tuple[float, float, int] | tuple[None, None, None]:
+        """
+        Reads prop_correct from all held-out NetCDF map files for a given spectra.
+        Returns (mean, std, n_rois) or (None, None, None).
+        """
+        if not _has_xr or not maps_dir.exists():
+            return None, None, None
+
+        spectra_tag = f"spectra{spectra}".lower()
+        candidates = [
+            d for d in maps_dir.iterdir()
+            if d.is_dir()
+               and held_out_pattern.lower() in d.name.lower()
+               and spectra_tag in d.name.lower()
+        ]
+        if not candidates:
+            logger.debug(f"No held-out map dir found for spectra {spectra} "
+                         f"(pattern='{held_out_pattern}', spectra_tag='{spectra_tag}')")
+            return None, None, None
+
+        # Use the first matching directory (there should only be one per spectra)
+        held_dir = candidates[0]
+        prop_vals = []
+        for nc_path in held_dir.glob("*.nc"):
+            try:
+                ds = xr.open_dataset(nc_path, engine="netcdf4")
+                pv = ds.attrs.get("prop_correct")
+                ds.close()
+                if pv is not None and not (isinstance(pv, float) and np.isnan(pv)):
+                    prop_vals.append(float(pv))
+            except Exception as e:
+                logger.debug(f"Could not read {nc_path}: {e}")
+
+        if not prop_vals:
+            logger.warning(f"No valid prop_correct values found in {held_dir}")
+            return None, None, None
+
+        arr = np.array(prop_vals)
+        return float(arr.mean()), float(arr.std()), len(arr)
+
+    # ── collect data ─────────────────────────────────────────────────────────
+
+    records = []
+    # Cache held-out per spectra (independent of level)
+    held_cache: dict[str, tuple] = {}
+
+    for level in levels:
+        for spectra in spectra_types:
+            cv_mean, cv_std = _load_cv_metric(spectra, level, cv_metric)
+            test_f1 = _load_test_f1(spectra, level)
+
+            if spectra not in held_cache:
+                held_cache[spectra] = _load_held_out(spectra)
+            ho_mean, ho_std, ho_n = held_cache[spectra]
+
+            # Skip rows where we have nothing at all
+            if cv_mean is None and test_f1 is None and ho_mean is None:
+                logger.warning(f"No data for spectra={spectra} level={level} — skipping.")
+                continue
+
+            records.append({
+                "spectra": spectra,
+                "level": level,
+                "label": f"Spectra {spectra} L{level}",
+                "cv_mean": cv_mean,
+                "cv_std": cv_std,
+                "test_f1": test_f1,
+                "ho_mean": ho_mean,
+                "ho_std": ho_std,
+                "ho_n": ho_n,
+            })
+
+    if not records:
+        logger.error("No data found — check output directory structure and held_out_pattern.")
+        return None
+
+    df = pd.DataFrame(records)
+
+    # ── plot ─────────────────────────────────────────────────────────────────
+
+    cv_metric_label = cv_metric.replace("_", " ")
+    n_rows = len(df)
+    fig_h = max(5, n_rows * 0.52 + 2.5)
+    fig, ax = plt.subplots(figsize=(10, fig_h))
+
+    # Colour palette — consistent with pipeline conventions
+    COL_CV = "#185FA5"  # blue  (CV)
+    COL_TEST = "#0F6E56"  # teal  (single-model test)
+    COL_HO = "#993C1D"  # coral/red (held-out — most independent)
+
+    y_positions = np.arange(n_rows)
+
+    for i, row in df.iterrows():
+        y = n_rows - 1 - list(df.index).index(i)  # top-to-bottom ordering
+
+        # Collect x-values that are not None for the connecting line
+        x_vals = [v for v in [row["cv_mean"], row["test_f1"], row["ho_mean"]]
+                  if v is not None]
+        if len(x_vals) > 1:
+            ax.plot([min(x_vals), max(x_vals)], [y, y],
+                    color="#cccccc", linewidth=1.2, zorder=1, solid_capstyle="round")
+
+        # CV dot + error bar
+        if row["cv_mean"] is not None:
+            ax.errorbar(
+                row["cv_mean"], y,
+                xerr=row["cv_std"] if row["cv_std"] is not None else 0,
+                fmt="o", color=COL_CV, markersize=7, capsize=3,
+                linewidth=1.2, zorder=3, label=f"CV mean {cv_metric_label} ± std" if i == df.index[0] else "",
+            )
+
+        # Single-model test F1 dot
+        if row["test_f1"] is not None:
+            ax.scatter(
+                row["test_f1"], y,
+                marker="D", color=COL_TEST, s=45, zorder=3,
+                label="Single-model test F1" if i == df.index[0] else "",
+            )
+
+        # Held-out dot + error bar
+        if row["ho_mean"] is not None:
+            n_label = f" (n={int(row['ho_n'])})" if row["ho_n"] is not None else ""
+            ax.errorbar(
+                row["ho_mean"], y,
+                xerr=row["ho_std"] if row["ho_std"] is not None else 0,
+                fmt="s", color=COL_HO, markersize=7, capsize=3,
+                linewidth=1.2, zorder=3,
+                label=f"Held-out ROI mean ± std{n_label}" if i == df.index[0] else "",
+            )
+
+    # Y-axis labels
+    y_labels = [df.loc[i, "label"] for i in reversed(df.index)]
+    ax.set_yticks(np.arange(n_rows))
+    ax.set_yticklabels(y_labels, fontsize=9)
+    ax.yaxis.set_tick_params(length=0)
+
+    # Horizontal separators between levels
+    level_changes = []
+    for idx in range(1, n_rows):
+        if df.iloc[n_rows - 1 - idx]["level"] != df.iloc[n_rows - idx]["level"]:
+            level_changes.append(idx - 0.5)
+    for yc in level_changes:
+        ax.axhline(yc, color="#dddddd", linewidth=1.0, zorder=0)
+
+    # Level group labels on the right margin
+    for level in levels:
+        level_rows = [n_rows - 1 - list(df.index).index(i)
+                      for i, row in df.iterrows() if row["level"] == level]
+        if level_rows:
+            y_mid = np.mean(level_rows)
+            ax.text(1.01, y_mid / (n_rows - 1) if n_rows > 1 else 0.5,
+                    f"L{level}", transform=ax.transAxes,
+                    ha="left", va="center", fontsize=9, fontweight=500, color="#555555")
+
+    ax.set_xlim(0, 1.05)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(0.1))
+    ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    ax.set(
+        xlabel="Accuracy / F1",
+        title=(
+            f"CV {cv_metric_label} vs test F1 vs held-out ROI accuracy\n"
+            f"{'Weighted' if weighted else 'Unweighted'} models — "
+            f"Spectra {', '.join(spectra_types)}"
+        ),
+        **_ax_kwargs(kwargs),
+    )
+
+    ax.legend(
+        loc="best", fontsize=8.5, framealpha=0.85,
+        title="Estimate type", title_fontsize=8.5,
+    )
+
+    fig.tight_layout()
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"cv_vs_held_out_L{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"CV vs held-out chart saved: {out_path}")
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# CV fold stability strip  (idea #3)
+# ---------------------------------------------------------------------------
+
+def cv_fold_stability_strip(
+        output_dir: Path,
+        spectra_types: list[str] = None,
+        levels: list[int] = None,
+        weighted: bool = True,
+        held_out_pattern: str = "held_out",
+        cv_metric: str = "pixel_accuracy",
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    For each model (spectra × level), shows the 5 individual CV fold metric
+    scores as dots with a mean line, and overlays the held-out ROI mean accuracy
+    as a dashed horizontal line.
+
+    Layout: one subplot per level (rows), one group of dots per spectra (columns
+    within each subplot). This makes fold variance and the CV-vs-held-out gap
+    immediately comparable across all 16 models.
+
+    Data sources
+    ────────────
+    Fold F1s : outputs/spectra_{X}/level_{N}_cv[_unweighted]/summary/metrics_per_fold.csv
+               column = "macro_f1"
+    Held-out : outputs/maps/{held_out_pattern}*spectra{X}*/ → prop_correct NetCDF attrs
+
+    Args:
+        output_dir:       Root output directory.
+        spectra_types:    Defaults to ['A','B','C','D'].
+        levels:           Defaults to [1, 2, 3, 4].
+        weighted:         Whether to use weighted model outputs.
+        held_out_pattern: Substring to match held-out map directory names.
+        out_path:         Output PNG path. Auto-generated if None.
+    """
+    try:
+        import xarray as xr
+        _has_xr = True
+    except ImportError:
+        _has_xr = False
+
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    levels = levels or [1, 2, 3, 4]
+    suffix = "" if weighted else "_unweighted"
+    maps_dir = output_dir / "maps"
+
+    # ── held-out loader (same logic as cv_vs_held_out_chart) ─────────────────
+    def _held_out_mean(spectra: str) -> float | None:
+        if not _has_xr or not maps_dir.exists():
+            return None
+        tag = f"spectra{spectra}".lower()
+        candidates = [d for d in maps_dir.iterdir()
+                      if d.is_dir()
+                      and held_out_pattern.lower() in d.name.lower()
+                      and tag in d.name.lower()]
+        if not candidates:
+            return None
+        vals = []
+        for nc in candidates[0].glob("*.nc"):
+            try:
+                ds = xr.open_dataset(nc, engine="netcdf4")
+                pv = ds.attrs.get("prop_correct")
+                ds.close()
+                if pv is not None and not (isinstance(pv, float) and np.isnan(pv)):
+                    vals.append(float(pv))
+            except Exception:
+                pass
+        return float(np.mean(vals)) if vals else None
+
+    # ── layout ───────────────────────────────────────────────────────────────
+    n_levels = len(levels)
+    n_spectra = len(spectra_types)
+
+    # Shared y limits per level (computed after loading)
+    fig, axes = plt.subplots(
+        n_levels, 1,
+        figsize=(max(7, n_spectra * 2.2 + 1.5), n_levels * 3.2),
+        sharex=False,
+    )
+    if n_levels == 1:
+        axes = [axes]
+
+    # Cache held-out means
+    held_cache = {s: _held_out_mean(s) for s in spectra_types}
+
+    COL_FOLD = "#185FA5"
+    COL_MEAN = "#0F6E56"
+    COL_HO = "#993C1D"
+
+    for ax_idx, (level, ax) in enumerate(zip(levels, axes)):
+        x_ticks = []
+        x_labels = []
+
+        all_vals = []  # for y-range
+
+        for sp_idx, spectra in enumerate(spectra_types):
+            x_centre = sp_idx * 1.0
+            p = (output_dir / f"spectra_{spectra}"
+                 / f"level_{level}_cv{suffix}" / "summary" / "metrics_per_fold.csv")
+
+            if not p.exists():
+                logger.debug(f"Missing: {p}")
+                x_ticks.append(x_centre)
+                x_labels.append(f"Spectra {spectra}")
+                continue
+
+            fold_df = pd.read_csv(p)
+            if cv_metric not in fold_df.columns:
+                logger.warning(f"'{cv_metric}' not in {p} — falling back to macro_f1")
+                cv_metric = "macro_f1"
+            fold_f1s = fold_df[cv_metric].dropna().values
+            mean_f1 = fold_f1s.mean()
+            all_vals.extend(fold_f1s.tolist())
+
+            # Jittered fold dots
+            jitter = np.linspace(-0.12, 0.12, len(fold_f1s))
+            ax.scatter(
+                np.full(len(fold_f1s), x_centre) + jitter,
+                fold_f1s,
+                color=COL_FOLD, s=30, alpha=0.75, zorder=3,
+                label="Fold F1" if ax_idx == 0 and sp_idx == 0 else "",
+            )
+
+            # Mean line
+            ax.hlines(
+                mean_f1, x_centre - 0.2, x_centre + 0.2,
+                colors=COL_MEAN, linewidth=2.0, zorder=4,
+                label="CV mean" if ax_idx == 0 and sp_idx == 0 else "",
+            )
+
+            # Held-out dashed line
+            ho = held_cache.get(spectra)
+            if ho is not None:
+                ax.hlines(
+                    ho, x_centre - 0.2, x_centre + 0.2,
+                    colors=COL_HO, linewidth=1.8, linestyle="--", zorder=4,
+                    label="Held-out mean" if ax_idx == 0 and sp_idx == 0 else "",
+                )
+                all_vals.append(ho)
+
+            x_ticks.append(x_centre)
+            x_labels.append(f"Spectra {spectra}")
+
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_xlim(-0.5, n_spectra - 0.5)
+        ax.set_ylabel(cv_metric.replace("_", " ").title(), fontsize=8)
+        ax.set_title(f"Level {level}", fontsize=9, fontweight=500, pad=4)
+        ax.grid(True, axis="y", alpha=0.2, linewidth=0.5)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        # Y-range: pad around actual values; always show 0 context for L1/L4
+        if all_vals:
+            lo = max(0, min(all_vals) - 0.05)
+            hi = min(1.02, max(all_vals) + 0.05)
+            ax.set_ylim(lo, hi)
+
+    # Single shared legend on first subplot
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    axes[0].legend(handles, labels_, fontsize=8, framealpha=0.85,
+                   loc="best", title="Estimate", title_fontsize=8)
+
+    cv_metric_label = cv_metric.replace("_", " ")
+    fig.suptitle(
+        f"CV fold stability ({cv_metric_label}) vs held-out ROI accuracy\n"
+        f"{'Weighted' if weighted else 'Unweighted'} — "
+        f"Spectra {', '.join(spectra_types)}",
+        fontsize=10, y=1.01,
+    )
+    fig.tight_layout()
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"cv_fold_stability_L{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"CV fold stability strip saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Δ (CV F1 − held-out accuracy) heatmap  (idea #4)
+# ---------------------------------------------------------------------------
+
+def cv_held_out_delta_heatmap(
+        output_dir: Path,
+        spectra_types: list[str] = None,
+        levels: list[int] = None,
+        weighted: bool = True,
+        held_out_pattern: str = "held_out",
+        cv_metric: str = "pixel_accuracy",
+        out_path: Path | None = None,
+        **kwargs,
+) -> pd.DataFrame | None:
+    """
+    16-cell heatmap (4 spectra × 4 levels) showing Δ = CV mean F1 − held-out
+    mean prop_correct. Diverging colourmap centred at 0: blue = CV < held-out
+    (rare/good), red = CV > held-out (held-out harder).
+
+    Also annotates each cell with the raw CV mean and held-out mean for
+    full information density without needing a separate table.
+
+    Data sources: same as cv_vs_held_out_chart().
+
+    Args:
+        output_dir:       Root output directory.
+        spectra_types:    Defaults to ['A','B','C','D'].
+        levels:           Defaults to [1, 2, 3, 4].
+        weighted:         Whether to use weighted model outputs.
+        held_out_pattern: Substring to match held-out map directory names.
+        out_path:         Output PNG path. Auto-generated if None.
+
+    Returns:
+        DataFrame with columns [spectra, level, cv_mean, ho_mean, delta].
+    """
+    try:
+        import xarray as xr
+        _has_xr = True
+    except ImportError:
+        _has_xr = False
+
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    levels = levels or [1, 2, 3, 4]
+    suffix = "" if weighted else "_unweighted"
+    maps_dir = output_dir / "maps"
+
+    def _cv_mean(spectra: str, level: int) -> float | None:
+        p = (output_dir / f"spectra_{spectra}"
+             / f"level_{level}_cv{suffix}" / "summary" / "metrics_summary.csv")
+        if not p.exists():
+            return None
+        _df = pd.read_csv(p, index_col=0)
+        _metric = cv_metric if cv_metric in _df.columns else "macro_f1"
+        if _metric != cv_metric:
+            logger.warning(f"'{cv_metric}' not in {p} — falling back to macro_f1")
+        try:
+            return float(_df.loc["mean", _metric])
+        except KeyError:
+            return None
+
+    def _held_out_mean(spectra: str) -> float | None:
+        if not _has_xr or not maps_dir.exists():
+            return None
+        tag = f"spectra{spectra}".lower()
+        candidates = [d for d in maps_dir.iterdir()
+                      if d.is_dir()
+                      and held_out_pattern.lower() in d.name.lower()
+                      and tag in d.name.lower()]
+        if not candidates:
+            return None
+        vals = []
+        for nc in candidates[0].glob("*.nc"):
+            try:
+                ds = xr.open_dataset(nc, engine="netcdf4")
+                pv = ds.attrs.get("prop_correct")
+                ds.close()
+                if pv is not None and not (isinstance(pv, float) and np.isnan(pv)):
+                    vals.append(float(pv))
+            except Exception:
+                pass
+        return float(np.mean(vals)) if vals else None
+
+    # ── collect ───────────────────────────────────────────────────────────────
+    held_cache = {s: _held_out_mean(s) for s in spectra_types}
+
+    records = []
+    for level in levels:
+        for spectra in spectra_types:
+            cv = _cv_mean(spectra, level)
+            ho = held_cache.get(spectra)
+            delta = (cv - ho) if (cv is not None and ho is not None) else None
+            records.append({"spectra": spectra, "level": level,
+                            "cv_mean": cv, "ho_mean": ho, "delta": delta})
+
+    result_df = pd.DataFrame(records)
+
+    # ── build 2D arrays for heatmap (rows = levels, cols = spectra) ──────────
+    delta_grid = np.full((len(levels), len(spectra_types)), np.nan)
+    cv_grid = np.full_like(delta_grid, np.nan)
+    ho_grid = np.full_like(delta_grid, np.nan)
+
+    for i, level in enumerate(levels):
+        for j, spectra in enumerate(spectra_types):
+            row = result_df[(result_df.level == level) & (result_df.spectra == spectra)]
+            if not row.empty:
+                delta_grid[i, j] = row.iloc[0]["delta"]
+                cv_grid[i, j] = row.iloc[0]["cv_mean"]
+                ho_grid[i, j] = row.iloc[0]["ho_mean"]
+
+    if np.all(np.isnan(delta_grid)):
+        logger.error("No delta values computable — check CV summary and held-out map paths.")
+        return None
+
+    # ── plot ──────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(6, len(spectra_types) * 1.8 + 1.5),
+                                    max(4, len(levels) * 1.5 + 1.5)))
+
+    abs_max = np.nanmax(np.abs(delta_grid))
+    im = ax.imshow(
+        delta_grid, cmap="RdBu_r",
+        vmin=-abs_max, vmax=abs_max,
+        aspect="auto",
+    )
+
+    # Cell annotations: Δ on top line, CV / HO on second line
+    for i in range(len(levels)):
+        for j in range(len(spectra_types)):
+            d = delta_grid[i, j]
+            cv = cv_grid[i, j]
+            ho = ho_grid[i, j]
+            if np.isnan(d):
+                ax.text(j, i, "n/a", ha="center", va="center", fontsize=8, color="#888888")
+                continue
+            # Text colour: white on saturated cells, black in centre
+            brightness = abs(d) / (abs_max + 1e-9)
+            txt_col = "white" if brightness > 0.55 else "black"
+            sign = "+" if d >= 0 else ""
+            ax.text(j, i - 0.12, f"Δ {sign}{d:.3f}",
+                    ha="center", va="center", fontsize=9,
+                    fontweight=600, color=txt_col)
+            cv_str = f"{cv:.3f}" if not np.isnan(cv) else "—"
+            ho_str = f"{ho:.3f}" if not np.isnan(ho) else "—"
+            ax.text(j, i + 0.22, f"CV {cv_str}  HO {ho_str}",
+                    ha="center", va="center", fontsize=7, color=txt_col, alpha=0.85)
+
+    ax.set_xticks(np.arange(len(spectra_types)))
+    ax.set_xticklabels([f"Spectra {s}" for s in spectra_types], fontsize=10)
+    ax.set_yticks(np.arange(len(levels)))
+    ax.set_yticklabels([f"Level {l}" for l in levels], fontsize=10)
+
+    cv_metric_label = cv_metric.replace("_", " ")
+    cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
+    cbar.set_label(f"Δ = CV {cv_metric_label} − held-out mean accuracy", fontsize=8)
+    cbar.ax.axhline(0, color="black", linewidth=0.8)
+
+    ax.set_title(
+        f"Generalisation gap: CV {cv_metric_label} minus held-out ROI accuracy\n"
+        f"{'Weighted' if weighted else 'Unweighted'} — "
+        f"positive (red) = CV over-estimates real-world performance",
+        fontsize=9, pad=10,
+        **_ax_kwargs(kwargs),
+    )
+    ax.tick_params(length=0)
+
+    fig.tight_layout()
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"cv_held_out_delta_heatmap_L{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Delta heatmap saved: {out_path}")
+
+    return result_df
+
+
+# ---------------------------------------------------------------------------
+# Level-split paired chart  (idea #5) — L1–3 vs L4 separate panels
+# ---------------------------------------------------------------------------
+
+def cv_vs_held_out_split_chart(
+        output_dir: Path,
+        spectra_types: list[str] = None,
+        weighted: bool = True,
+        held_out_pattern: str = "held_out",
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    Two-panel version of cv_vs_held_out_chart() that treats Level 4 separately.
+
+    Left panel  — Levels 1, 2, 3: shared x-axis [0, 1] so the accuracy drop
+                  across levels is directly comparable.
+    Right panel — Level 4 only: same x-axis [0, 1] but annotated separately
+                  because the near-zero CV F1 and ~0.88 held-out accuracy are
+                  qualitatively different from the coarser levels (see
+                  entropy-comparison.md: +0.19–0.21 entropy gap on held-out).
+
+    A vertical grey annotation band in the Level 4 panel highlights the
+    CV F1 ≈ 0 region to distinguish it visually from absence-of-data.
+
+    Uses the same data sources as cv_vs_held_out_chart().
+
+    Args:
+        output_dir:       Root output directory.
+        spectra_types:    Defaults to ['A','B','C','D'].
+        weighted:         Whether to use weighted model outputs.
+        held_out_pattern: Substring to match held-out map directory names.
+        out_path:         Output PNG path. Auto-generated if None.
+    """
+    # Delegate data collection to cv_vs_held_out_chart() with all levels
+    df = cv_vs_held_out_chart(
+        output_dir=output_dir,
+        spectra_types=spectra_types or ["A", "B", "C", "D"],
+        levels=[1, 2, 3, 4],
+        weighted=weighted,
+        held_out_pattern=held_out_pattern,
+        out_path=Path(output_dir) / "_tmp_cv_held_out_internal.png",  # suppress auto-save
+    )
+
+    # Remove the temp file silently
+    tmp = Path(output_dir) / "_tmp_cv_held_out_internal.png"
+    if tmp.exists():
+        tmp.unlink()
+
+    if df is None or df.empty:
+        logger.error("No data available for split chart.")
+        return
+
+    df_main = df[df["level"].isin([1, 2, 3])].copy()
+    df_l4 = df[df["level"] == 4].copy()
+
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+
+    COL_CV = "#185FA5"
+    COL_TEST = "#0F6E56"
+    COL_HO = "#993C1D"
+
+    def _draw_panel(ax, panel_df, title_suffix: str, show_legend: bool, note: str | None = None):
+        """Draws one panel of the split chart onto ax."""
+        n = len(panel_df)
+        if n == 0:
+            ax.set_visible(False)
+            return
+
+        for plot_rank, (_, row) in enumerate(panel_df.iterrows()):
+            y = n - 1 - plot_rank
+
+            x_vals = [v for v in [row["cv_mean"], row["test_f1"], row["ho_mean"]]
+                      if v is not None]
+            if len(x_vals) > 1:
+                ax.plot([min(x_vals), max(x_vals)], [y, y],
+                        color="#cccccc", linewidth=1.2, zorder=1)
+
+            first = plot_rank == 0
+            if row["cv_mean"] is not None:
+                ax.errorbar(
+                    row["cv_mean"], y,
+                    xerr=row["cv_std"] if row["cv_std"] is not None else 0,
+                    fmt="o", color=COL_CV, markersize=7, capsize=3,
+                    linewidth=1.2, zorder=3,
+                    label="CV mean F1 ± std" if first and show_legend else "",
+                )
+            if row["test_f1"] is not None:
+                ax.scatter(
+                    row["test_f1"], y, marker="D",
+                    color=COL_TEST, s=45, zorder=3,
+                    label="Single-model test F1" if first and show_legend else "",
+                )
+            if row["ho_mean"] is not None:
+                ax.errorbar(
+                    row["ho_mean"], y,
+                    xerr=row["ho_std"] if row["ho_std"] is not None else 0,
+                    fmt="s", color=COL_HO, markersize=7, capsize=3,
+                    linewidth=1.2, zorder=3,
+                    label="Held-out ROI mean ± std" if first and show_legend else "",
+                )
+
+        y_labels = list(reversed([row["label"] for _, row in panel_df.iterrows()]))
+        ax.set_yticks(np.arange(n))
+        ax.set_yticklabels(y_labels, fontsize=9)
+        ax.yaxis.set_tick_params(length=0)
+
+        # Level separators
+        prev_level = None
+        for plot_rank, (_, row) in enumerate(panel_df.iterrows()):
+            y = n - 1 - plot_rank
+            if prev_level is not None and row["level"] != prev_level:
+                ax.axhline(y + 0.5, color="#dddddd", linewidth=1.0, zorder=0)
+            prev_level = row["level"]
+
+        # Level labels on right margin
+        for level in panel_df["level"].unique():
+            level_rows = [n - 1 - plot_rank
+                          for plot_rank, (_, row) in enumerate(panel_df.iterrows())
+                          if row["level"] == level]
+            if level_rows:
+                y_mid = np.mean(level_rows)
+                ax.text(1.01, y_mid / max(n - 1, 1),
+                        f"L{level}", transform=ax.transAxes,
+                        ha="left", va="center", fontsize=9,
+                        fontweight=500, color="#555555")
+
+        ax.set_xlim(0, 1.05)
+        ax.xaxis.set_major_locator(plt.MultipleLocator(0.1))
+        ax.set_xlabel("Accuracy / F1", fontsize=9)
+        ax.set_title(title_suffix, fontsize=9, fontweight=500, pad=6)
+        ax.grid(True, axis="x", alpha=0.2, linewidth=0.5)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        # Optional annotation text (used for Level 4 note)
+        if note:
+            ax.text(0.02, 0.02, note, transform=ax.transAxes,
+                    fontsize=7.5, color="#666666", va="bottom",
+                    style="italic", wrap=True)
+
+        if show_legend:
+            ax.legend(loc="lower right", fontsize=8, framealpha=0.85,
+                      title="Estimate type", title_fontsize=8)
+
+    n_main = len(df_main)
+    n_l4 = len(df_l4)
+    h_main = max(3, n_main * 0.52 + 1.5)
+    h_l4 = max(2, n_l4 * 0.52 + 1.5)
+
+    fig, (ax_main, ax_l4) = plt.subplots(
+        1, 2,
+        figsize=(18, max(h_main, h_l4) + 1.0),
+        gridspec_kw={"width_ratios": [3, 1.4], "wspace": 0.35},
+    )
+
+    _draw_panel(ax_main, df_main,
+                title_suffix="Levels 1–3: class-level generalisation",
+                show_legend=True)
+
+    _draw_panel(ax_l4, df_l4,
+                title_suffix="Level 4: ROI-identity classification",
+                show_legend=False,
+                note=(
+                    "CV F1 ≈ 0: each fold withholds\n"
+                    "~24 ROIs with unseen class labels.\n"
+                    "Held-out ≈ 0.88: pixel accuracy\n"
+                    "on novel turf ROIs is maintained\n"
+                    "despite near-zero multiclass F1."
+                ))
+
+    # Shade the near-zero CV region in the L4 panel
+    if not df_l4.empty:
+        cv_vals = df_l4["cv_mean"].dropna()
+        if len(cv_vals):
+            shade_max = max(cv_vals.max() + 0.04, 0.08)
+            ax_l4.axvspan(0, shade_max, color="#185FA5", alpha=0.06, zorder=0,
+                          label="CV F1 ≈ 0 zone")
+
+    fig.suptitle(
+        f"CV F1 vs test F1 vs held-out ROI accuracy — "
+        f"{'Weighted' if weighted else 'Unweighted'} models\n"
+        f"Spectra {', '.join(spectra_types)}",
+        fontsize=11, y=1.01,
+    )
+
+    if out_path is None:
+        out_path = output_dir / "cv_vs_held_out_split.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Split chart saved: {out_path}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1851,7 +2707,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--type",
                         choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "interesting",
-                                 "umap", "pairwise", "both"], default="both",
+                                 "umap", "pairwise", "cv_held_out", "cv_stability", "cv_delta_heatmap",
+                                 "both"], default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
                         default=None,
@@ -1890,6 +2747,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feature-order", type=Path, default=None,
                         help="Path to a text file with one feature name per line "
                              "defining the y-axis order (default: sort by mean rank)")
+    parser.add_argument("--cv-metric", type=str, default="pixel_accuracy",
+                        help="CV metric to compare against held-out accuracy: "
+                             "'pixel_accuracy' (default, comparable to prop_correct) "
+                             "or 'macro_f1'")
+    parser.add_argument("--held-out-pattern", type=str, default="held_out",
+                        help="Substring to match held-out map directory names "
+                             "(default: 'held_out')")
     parser.add_argument("--unweighted", action="store_true",
                         help="Use unweighted model outputs (default: weighted)")
     parser.add_argument("--shap-col", type=str, default="mean_abs_shap_global",
@@ -1900,6 +2764,36 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     weighted = not args.unweighted
+
+    if args.type == "cv_stability":
+        cv_fold_stability_strip(
+            output_dir=args.output_dir,
+            spectra_types=args.spectra,
+            levels=args.levels,
+            weighted=weighted,
+            held_out_pattern=args.held_out_pattern,
+            cv_metric=args.cv_metric,
+        )
+
+    if args.type == "cv_delta_heatmap":
+        cv_held_out_delta_heatmap(
+            output_dir=args.output_dir,
+            spectra_types=args.spectra,
+            levels=args.levels,
+            weighted=weighted,
+            held_out_pattern=args.held_out_pattern,
+            cv_metric=args.cv_metric,
+        )
+
+    if args.type == "cv_held_out":
+        cv_vs_held_out_chart(
+            output_dir=args.output_dir,
+            spectra_types=args.spectra,
+            levels=args.levels,
+            weighted=weighted,
+            held_out_pattern=args.held_out_pattern,
+            cv_metric=args.cv_metric,
+        )
 
     if args.type in ("bump", "both"):
         bump_chart(
