@@ -1954,9 +1954,11 @@ def cv_vs_held_out_chart(
         val = m.get("macro_f1")
         return float(val) if val is not None else None
 
-    def _load_held_out(spectra: str) -> tuple[float, float, int] | tuple[None, None, None]:
+    def _load_held_out(spectra: str, level: int) -> tuple[float, float, int] | tuple[None, None, None]:
         """
-        Reads prop_correct from all held-out NetCDF map files for a given spectra.
+        Reads prop_correct from held-out NetCDF map files for a given spectra
+        and level. Files are filtered by level to avoid returning the same
+        averaged value across all levels.
         Returns (mean, std, n_rois) or (None, None, None).
         """
         if not _has_xr or not maps_dir.exists():
@@ -1977,7 +1979,7 @@ def cv_vs_held_out_chart(
         # Use the first matching directory (there should only be one per spectra)
         held_dir = candidates[0]
         prop_vals = []
-        for nc_path in held_dir.glob("*.nc"):
+        for nc_path in held_dir.glob(f"roi_*_spectra{spectra}_L{level}.nc"):
             try:
                 ds = xr.open_dataset(nc_path, engine="netcdf4")
                 pv = ds.attrs.get("prop_correct")
@@ -1988,7 +1990,7 @@ def cv_vs_held_out_chart(
                 logger.debug(f"Could not read {nc_path}: {e}")
 
         if not prop_vals:
-            logger.warning(f"No valid prop_correct values found in {held_dir}")
+            logger.warning(f"No valid prop_correct values found in {held_dir} for L{level}")
             return None, None, None
 
         arr = np.array(prop_vals)
@@ -1997,17 +1999,13 @@ def cv_vs_held_out_chart(
     # ── collect data ─────────────────────────────────────────────────────────
 
     records = []
-    # Cache held-out per spectra (independent of level)
-    held_cache: dict[str, tuple] = {}
 
     for level in levels:
         for spectra in spectra_types:
             cv_mean, cv_std = _load_cv_metric(spectra, level, cv_metric)
             test_f1 = _load_test_f1(spectra, level)
 
-            if spectra not in held_cache:
-                held_cache[spectra] = _load_held_out(spectra)
-            ho_mean, ho_std, ho_n = held_cache[spectra]
+            ho_mean, ho_std, ho_n = _load_held_out(spectra, level)
 
             # Skip rows where we have nothing at all
             if cv_mean is None and test_f1 is None and ho_mean is None:
@@ -2191,7 +2189,7 @@ def cv_fold_stability_strip(
     maps_dir = output_dir / "maps"
 
     # ── held-out loader (same logic as cv_vs_held_out_chart) ─────────────────
-    def _held_out_mean(spectra: str) -> float | None:
+    def _held_out_mean(spectra: str, level: int) -> float | None:
         if not _has_xr or not maps_dir.exists():
             return None
         tag = f"spectra{spectra}".lower()
@@ -2202,7 +2200,7 @@ def cv_fold_stability_strip(
         if not candidates:
             return None
         vals = []
-        for nc in candidates[0].glob("*.nc"):
+        for nc in candidates[0].glob(f"roi_*_spectra{spectra}_L{level}.nc"):
             try:
                 ds = xr.open_dataset(nc, engine="netcdf4")
                 pv = ds.attrs.get("prop_correct")
@@ -2225,9 +2223,6 @@ def cv_fold_stability_strip(
     )
     if n_levels == 1:
         axes = [axes]
-
-    # Cache held-out means
-    held_cache = {s: _held_out_mean(s) for s in spectra_types}
 
     COL_FOLD = "#185FA5"
     COL_MEAN = "#0F6E56"
@@ -2275,7 +2270,7 @@ def cv_fold_stability_strip(
             )
 
             # Held-out dashed line
-            ho = held_cache.get(spectra)
+            ho = _held_out_mean(spectra, level)
             if ho is not None:
                 ax.hlines(
                     ho, x_centre - 0.2, x_centre + 0.2,
@@ -2385,7 +2380,7 @@ def cv_held_out_delta_heatmap(
         except KeyError:
             return None
 
-    def _held_out_mean(spectra: str) -> float | None:
+    def _held_out_mean(spectra: str, level: int) -> float | None:
         if not _has_xr or not maps_dir.exists():
             return None
         tag = f"spectra{spectra}".lower()
@@ -2396,7 +2391,7 @@ def cv_held_out_delta_heatmap(
         if not candidates:
             return None
         vals = []
-        for nc in candidates[0].glob("*.nc"):
+        for nc in candidates[0].glob(f"roi_*_spectra{spectra}_L{level}.nc"):
             try:
                 ds = xr.open_dataset(nc, engine="netcdf4")
                 pv = ds.attrs.get("prop_correct")
@@ -2408,13 +2403,12 @@ def cv_held_out_delta_heatmap(
         return float(np.mean(vals)) if vals else None
 
     # ── collect ───────────────────────────────────────────────────────────────
-    held_cache = {s: _held_out_mean(s) for s in spectra_types}
 
     records = []
     for level in levels:
         for spectra in spectra_types:
             cv = _cv_mean(spectra, level)
-            ho = held_cache.get(spectra)
+            ho = _held_out_mean(spectra, level)
             delta = (cv - ho) if (cv is not None and ho is not None) else None
             records.append({"spectra": spectra, "level": level,
                             "cv_mean": cv, "ho_mean": ho, "delta": delta})
