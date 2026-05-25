@@ -57,6 +57,10 @@ BLOCK_SIZE: str = "1x1"
 # A constant gamma column sdiv_gamma_plot_{fact} is also added per run regardless of this setting.
 SPECDIV_VARS: list[str] | None = None
 
+# Whether to include gamma as a constant per-pixel feature column.
+# Set to False to exclude gamma (e.g. Step 2: normalisation only, no gamma).
+SPECDIV_INCLUDE_GAMMA: bool = True
+
 # Maximum allowed difference between line and sample dimensions.
 SPATIAL_TOLERANCE: int = 5
 # Bands are selected by wavelength value using the 'wavelength' coordinate.
@@ -344,13 +348,14 @@ def load_specdiv(roi_id: str, data_dir: Path,
             frames.append(sub.set_index(["line", "sample"])[[col]])
 
         # Add gamma as a constant column for all valid pixels in this run
-        gamma_col = f"sdiv_gamma_plot_{fact}"
-        gamma_frame = pd.DataFrame({
-            "line": target_lines.astype(int),
-            "sample": target_samples.astype(int),
-            gamma_col: gamma_sdiv,
-        }).set_index(["line", "sample"])
-        frames.append(gamma_frame)
+        if SPECDIV_INCLUDE_GAMMA:
+            gamma_col = f"sdiv_gamma_plot_{fact}"
+            gamma_frame = pd.DataFrame({
+                "line": target_lines.astype(int),
+                "sample": target_samples.astype(int),
+                gamma_col: gamma_sdiv,
+            }).set_index(["line", "sample"])
+            frames.append(gamma_frame)
 
         ds.close()
 
