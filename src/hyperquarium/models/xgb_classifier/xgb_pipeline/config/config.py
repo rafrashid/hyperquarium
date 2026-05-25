@@ -106,7 +106,7 @@ WINDOW_SIZES = [7, 9, 13, 17, 25, 35, 51, 71, 101, 143, 203]
 GLCM_METRICS = ["energy", "entropy", "homogeneity", "contrast"]
 
 # Spectral diversity measure names (the full measure identifier between sdiv_ and _plot_)
-SDIV_METRICS = ["alpha_sdiv", "beta_lcsd"]
+SDIV_METRICS = ["alpha_local", "beta_local"]
 
 
 def classify_column(col: str) -> str:
