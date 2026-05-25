@@ -218,6 +218,12 @@ XGB = XGBConfig()
 # ---------------------------------------------------------------------------
 # Level-specific settings
 # ---------------------------------------------------------------------------
+# n_classes is set to -1 for levels where the class count varies by dataset
+# (Levels 1 and 2). patch_level_configs(df) in loader.py will derive the
+# correct value dynamically after remap_labels() is called.
+# Level 3 is always binary (2 classes) — dataset-agnostic.
+# Level 4 is handled separately in each script (requires roi_label_mapping.csv).
+# ---------------------------------------------------------------------------
 
 @dataclass
 class LevelConfig:
@@ -235,27 +241,22 @@ LEVEL_CONFIGS = {
         run_unweighted=True,  # Hypothesis baseline: natural decision boundary
     ),
     2: LevelConfig(
-        level=2, n_classes=5,
+        level=2, n_classes=-1,  # Patched dynamically — varies by dataset
         objective="multi:softprob", eval_metric="mlogloss",
     ),
     1: LevelConfig(
-        level=1, n_classes=8,
+        level=1, n_classes=-1,  # Patched dynamically — varies by dataset
         objective="multi:softprob", eval_metric="mlogloss",
     ),
     # Level 4: ROI-level classification within Level 2 classes.
-    # Each ROI becomes its own class: {level2_label}_{roi_ID}
-    # e.g. turf_algae_20250922-094548-12
-    # n_classes is set dynamically in remap_labels() — placeholder here.
-    # Purpose: quantify within-class vs between-class spectral variability,
-    #          particularly whether turf algae ROIs are more variable among
-    #          themselves than relative to other classes.
+    # n_classes derived at runtime from unique ROIs in data.
+    # Handled separately in each script — not patched by patch_level_configs().
     4: LevelConfig(
-        level=4, n_classes=-1,  # Derived at runtime from unique ROIs in data
+        level=4, n_classes=-1,
         objective="multi:softprob",
-        eval_metric=["mlogloss", "merror"],  # Early stopping on mlogloss (last)
+        eval_metric=["mlogloss", "merror"],
     ),
 }
-
 
 # ---------------------------------------------------------------------------
 # SHAP settings

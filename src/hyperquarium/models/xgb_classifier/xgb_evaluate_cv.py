@@ -16,14 +16,14 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Evaluate one CV fold model."
-    )
+    parser = argparse.ArgumentParser(description="Evaluate one CV fold model.")
     parser.add_argument("data_path", type=Path)
     parser.add_argument("level", type=int, choices=[1, 2, 3, 4])
     parser.add_argument("weighted", type=str)
     parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--labelset", type=str, default="pilot")
+    parser.add_argument("--held-out-frac", type=float, default=0.20)
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -48,12 +48,15 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(f"EVALUATE CV  {run_id}")
-    logger.info(f"  fold : {fold} / {CV.n_splits - 1}")
+    logger.info(f"  fold          : {fold} / {CV.n_splits - 1}")
+    logger.info(f"  held_out_frac : {args.held_out_frac:.0%}")
+    logger.info(f"  seed          : {args.seed}")
     logger.info("=" * 60)
 
     from config.config import LEVEL_CONFIGS, TURF_ALGAE_CLASS, LABEL_COLUMNS
-    from data.loader import (load_spectra, remap_labels, subsample_turf_rois,
-                             split_data_cv, get_feature_columns)
+    from data.loader import (load_spectra, remap_labels, sample_held_out_rois,
+                             split_data_cv, get_feature_columns, make_dmatrix,
+                             patch_level_configs)
     from models.trainer import load_model
     from evaluation.evaluator import run_evaluation
     from utils.io import load_json
@@ -66,38 +69,36 @@ def main() -> None:
     suffix = "" if weighted else "_unweighted"
     out_dir = Path(OUTPUT_DIR) / f"spectra_{spectra}" / f"level_{level}_cv{suffix}" / f"fold_{fold}"
     model_path = out_dir / "model.json"
-
     if not model_path.exists():
         logger.error(f"Model not found: {model_path} — run train_cv.py first.")
         sys.exit(1)
 
-    lvl_cfg = LEVEL_CONFIGS[level]
-
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
-    df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
+    df = sample_held_out_rois(df, held_out_frac=args.held_out_frac,
+                              random_seed=args.seed, spectra=spectra)
 
+    # Patch n_classes for Levels 1, 2, 3 dynamically from data
+    patch_level_configs(df)
+
+    # Level 4: handled separately
     if level == 4:
         n_rois = df[LABEL_COLUMNS[4]].nunique()
         LEVEL_CONFIGS[4].n_classes = n_rois
 
+    lvl_cfg = LEVEL_CONFIGS[level]
     feature_cols = get_feature_columns(df)
     _, val_df = split_data_cv(df, level, fold)
 
     label_col = LABEL_COLUMNS[level]
     le = LabelEncoder()
-    le.fit(df[label_col])  # Fit on full data for consistent class mapping
+    le.fit(df[label_col])
     y_val = le.transform(val_df[label_col])
 
-    from data.loader import make_dmatrix
-    # Need a reference DMatrix — use val only (no train needed for evaluation)
-    # Use ref=False since we are not training
     dval = make_dmatrix(val_df, feature_cols, y_val, ref=False)
-
     booster = load_model(model_path)
     evals_result = load_json(out_dir / "evals_result.json")
-    n_classes = len(le.classes_)
 
     run_evaluation(
         booster=booster,
@@ -105,7 +106,7 @@ def main() -> None:
         y_test=y_val,
         evals_result=evals_result,
         le=le,
-        n_classes=n_classes,
+        n_classes=len(le.classes_),
         eval_metric=lvl_cfg.eval_metric,
         turf_algae_class=TURF_ALGAE_CLASS,
         out_dir=out_dir,

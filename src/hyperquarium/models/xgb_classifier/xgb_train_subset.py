@@ -27,9 +27,6 @@ import argparse
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -54,20 +51,13 @@ def parse_weighted(val: str) -> bool:
     raise ValueError(f"weighted must be true/false, got: '{val}'")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     args = parse_args()
     weighted = parse_weighted(args.weighted)
     level = args.level
     data_path = Path(args.data_path)
-
-    # Derive spectra label from filename stem: spectra_A.parquet -> "A"
     spectra = data_path.stem.split("_")[-1].upper()
 
-    # ---- Logging ----------------------------------------------------------
     from utils.logger import get_logger
     from config.config import OUTPUT_DIR, LOG_DIR
     run_id = f"spectra_{spectra}_level{level}_{'weighted' if weighted else 'unweighted'}"
@@ -80,22 +70,21 @@ def main() -> None:
     logger.info(f"  weighted  : {weighted}")
     logger.info("=" * 60)
 
-    # ---- Imports ----------------------------------------------------------
-    from config.config import LEVEL_CONFIGS, XGB, SPLIT, OUTPUT_DIR
+    from config.config import LEVEL_CONFIGS, XGB, SPLIT, OUTPUT_DIR, LABEL_COLUMNS
     from data.loader import (load_spectra, remap_labels, subsample_turf_rois, split_data,
                              get_feature_columns, encode_labels,
                              compute_sample_weights, make_dmatrix,
-                             save_split_metadata, save_roi_mapping)
+                             save_split_metadata, save_roi_mapping,
+                             patch_level_configs)
     from models.trainer import build_params, patch_num_class, train_model, save_model, save_training_metadata
     from utils.io import make_output_dir
 
-    # ---- Validate ---------------------------------------------------------
     if not data_path.exists():
         logger.error(f"Data file not found: {data_path}")
         sys.exit(1)
 
     if level not in LEVEL_CONFIGS:
-        logger.error(f"Invalid level: {level}. Must be 1, 2, or 3.")
+        logger.error(f"Invalid level: {level}. Must be 1, 2, 3, or 4.")
         sys.exit(1)
 
     lvl_cfg = LEVEL_CONFIGS[level]
@@ -104,16 +93,20 @@ def main() -> None:
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
-    # Pass spectra label so held-out file is named uniquely per spectra type
     df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
 
-    # Level 4: derive n_classes dynamically from unique ROIs in data
+    # Patch n_classes for Levels 1, 2, 3 dynamically from data
+    patch_level_configs(df)
+
+    # Level 4: handled separately — derives from unique ROIs
     if level == 4:
-        from config.config import LABEL_COLUMNS
         n_rois = df[LABEL_COLUMNS[4]].nunique()
         LEVEL_CONFIGS[4].n_classes = n_rois
         logger.info(f"Level 4 n_classes set dynamically: {n_rois}")
         save_roi_mapping(df, out_dir)
+
+    # Re-read lvl_cfg after patching
+    lvl_cfg = LEVEL_CONFIGS[level]
 
     train_df, val_df, test_df = split_data(df, level, SPLIT)
     feature_cols = get_feature_columns(df)
@@ -127,7 +120,7 @@ def main() -> None:
 
     # ---- Train ------------------------------------------------------------
     params = build_params(XGB, lvl_cfg)
-    params = patch_num_class(params, le)  # Ensure num_class matches actual encoded classes
+    params = patch_num_class(params, le)
     booster, evals_result = train_model(dtrain, dval, params, XGB, run_id)
     save_model(booster, out_dir)
     save_training_metadata(booster, evals_result, params, le, out_dir, weighted)

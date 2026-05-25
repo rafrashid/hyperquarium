@@ -1,24 +1,9 @@
 """
 shap.py
-PBS-ready SHAP analysis script. Loads data and a trained model, computes
-SHAP values, feature importance, scale-response curve, dependence plots,
-and PCA → t-SNE embedding visualisation.
-
-Requires train.py to have been run first for the same spectra/level/weighted
-combination.
+PBS-ready SHAP analysis script.
 
 Usage:
-    python3 shap.py <data_path> <level> <weighted>
-
-Arguments:
-    data_path : Path to the spectra parquet or CSV file
-                e.g. data/spectra_A.parquet
-    level     : Hierarchy level (1, 2, or 3)
-    weighted  : "true" / "false"  (must match the training run)
-
-Examples:
-    python3 shap.py data/spectra_A.parquet 3 true
-    python3 shap.py data/spectra_B.parquet 1 true
+    python3 shap.py <data_path> <level> <weighted> [--labelset pilot]
 
 PBS usage:
     module load python3/3.14.4
@@ -34,22 +19,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="SHAP analysis for one trained XGBoost model."
     )
-    parser.add_argument("data_path", type=Path,
-                        help="Path to spectra parquet/CSV file")
-    parser.add_argument("level", type=int, choices=[1, 2, 3, 4],
-                        help="Hierarchy level (1, 2, or 3)")
-    parser.add_argument("weighted", type=str,
-                        help="Apply sample weights: true / false")
-    parser.add_argument("--labelset", type=str, default="pilot",
-                        help="Label mapping labelset filter (default: pilot)")
+    parser.add_argument("data_path", type=Path)
+    parser.add_argument("level", type=int, choices=[1, 2, 3, 4])
+    parser.add_argument("weighted", type=str)
+    parser.add_argument("--labelset", type=str, default="pilot")
     return parser.parse_args()
 
 
 def parse_weighted(val: str) -> bool:
-    if val.strip().lower() in ("true", "1", "yes"):
-        return True
-    if val.strip().lower() in ("false", "0", "no"):
-        return False
+    if val.strip().lower() in ("true", "1", "yes"):  return True
+    if val.strip().lower() in ("false", "0", "no"):  return False
     raise ValueError(f"weighted must be true/false, got: '{val}'")
 
 
@@ -73,9 +52,10 @@ def main() -> None:
     logger.info("=" * 60)
 
     import numpy as np
-    from config.config import LEVEL_CONFIGS, SPLIT, TURF_ALGAE_CLASS, SHAP_CFG
-    from data.loader import (load_spectra, remap_labels, split_data,
-                             get_feature_columns, encode_labels, make_dmatrix)
+    from config.config import LEVEL_CONFIGS, SPLIT, TURF_ALGAE_CLASS, SHAP_CFG, LABEL_COLUMNS
+    from data.loader import (load_spectra, remap_labels, subsample_turf_rois, split_data,
+                             get_feature_columns, encode_labels, make_dmatrix,
+                             patch_level_configs)
     from models.trainer import load_model
     from evaluation.evaluator import predict_leaf
     from features.shap_analysis import run_shap_analysis, plot_pca_tsne
@@ -85,29 +65,33 @@ def main() -> None:
         logger.error(f"Data file not found: {data_path}")
         sys.exit(1)
 
-    lvl_cfg = LEVEL_CONFIGS[level]
     out_dir = make_output_dir(OUTPUT_DIR, spectra, level, weighted)
-
     model_path = out_dir / "model.json"
     if not model_path.exists():
-        logger.error(
-            f"Model not found: {model_path}\n"
-            f"Run train.py first for spectra={spectra} level={level} weighted={weighted}"
-        )
+        logger.error(f"Model not found: {model_path} — run train.py first.")
         sys.exit(1)
 
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
+    # df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
 
-    # Level 4: derive n_classes dynamically from unique ROIs in data
+    # Patch n_classes for Levels 1, 2, 3 dynamically from data
+    patch_level_configs(df)
+
+    # Level 4: handled separately
     if level == 4:
-        from config.config import LABEL_COLUMNS
-        n_rois = df[LABEL_COLUMNS[4]].nunique()
-        LEVEL_CONFIGS[4].n_classes = n_rois
-        logger.info(f"Level 4 n_classes set dynamically: {n_rois}")
-        from data.loader import save_roi_mapping
-        save_roi_mapping(df, out_dir)
+        roi_map_path = out_dir / "roi_label_mapping.csv"
+        if roi_map_path.exists():
+            import pandas as _pd
+            n_rois = _pd.read_csv(roi_map_path)["label_level4"].nunique()
+            LEVEL_CONFIGS[4].n_classes = n_rois
+            logger.info(f"Level 4 n_classes loaded from roi_label_mapping.csv: {n_rois}")
+        else:
+            logger.warning("roi_label_mapping.csv not found — falling back to df count.")
+            LEVEL_CONFIGS[4].n_classes = df[LABEL_COLUMNS[4]].nunique()
+
+    lvl_cfg = LEVEL_CONFIGS[level]
 
     train_df, val_df, test_df = split_data(df, level, SPLIT)
     feature_cols = get_feature_columns(df)
@@ -129,7 +113,6 @@ def main() -> None:
     dshap = make_dmatrix(shap_df, feature_cols, shap_y, ref=False)
     X_shap = shap_df[feature_cols].values
 
-    # ---- SHAP analysis ----------------------------------------------------
     run_shap_analysis(
         booster=booster,
         dmatrix=dshap,
@@ -141,10 +124,8 @@ def main() -> None:
         out_dir=out_dir,
     )
 
-    # ---- PCA → t-SNE on leaf embeddings -----------------------------------
     dleaf = make_dmatrix(shap_df, feature_cols, shap_y, ref=False)
     leaves = predict_leaf(booster, dleaf)
-
     plot_pca_tsne(
         embedding_matrix=leaves,
         y=shap_y,

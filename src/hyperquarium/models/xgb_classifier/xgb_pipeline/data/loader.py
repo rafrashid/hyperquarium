@@ -259,6 +259,44 @@ def remap_labels(
     return out
 
 
+def patch_level_configs(df: pd.DataFrame) -> None:
+    """
+    Patches n_classes in LEVEL_CONFIGS for any level where n_classes == -1,
+    deriving the value dynamically from the unique class count in df.
+
+    Applies to Levels 1, 2, and 3 only. Level 4 is excluded — it is handled
+    separately in each script because it may require reading from
+    roi_label_mapping.csv for consistency across train/evaluate/shap/predict.
+
+    Must be called after remap_labels() so that label_level1, label_level2,
+    label_level3 columns exist in df.
+
+    Args:
+        df: DataFrame after remap_labels() has been applied.
+    """
+    from config.config import LEVEL_CONFIGS, LABEL_COLUMNS
+
+    for level in (1, 2, 3):
+        cfg = LEVEL_CONFIGS.get(level)
+        if cfg is None:
+            continue
+        if cfg.n_classes == -1:
+            col = LABEL_COLUMNS[level]
+            if col not in df.columns:
+                logger.warning(
+                    f"patch_level_configs: column '{col}' not found for Level {level} — "
+                    f"skipping patch. Ensure remap_labels() has been called first."
+                )
+                continue
+            n = int(df[col].nunique())
+            cfg.n_classes = n
+            logger.info(f"patch_level_configs: Level {level} n_classes set dynamically to {n}")
+        else:
+            logger.debug(
+                f"patch_level_configs: Level {level} n_classes already set to "
+                f"{cfg.n_classes} — no patch needed."
+            )
+
 def validate_mapping(
         df: pd.DataFrame,
         mapping_file: str | Path = LABEL_MAPPING_FILE,

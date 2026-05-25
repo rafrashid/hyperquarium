@@ -1,17 +1,12 @@
 """
 train_cv.py
 PBS-ready CV training script. Trains one fold of a StratifiedGroupKFold
-cross-validation, grouped by roi_ID so all pixels from one ROI go entirely
-to train or validation.
+cross-validation, grouped by roi_ID.
 
 Output goes to: outputs/spectra_{X}/level_{N}_cv/fold_{K}/
 
 Usage:
     python3 train_cv.py <data_path> <level> <weighted> --fold N [--labelset pilot]
-
-Examples:
-    python3 train_cv.py data/spectra_A.parquet 3 true --fold 0
-    python3 train_cv.py data/spectra_A.parquet 1 true --fold 2 --labelset reefcompare
 
 PBS array job usage:
     #PBS -J 0-4
@@ -30,9 +25,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("data_path", type=Path)
     parser.add_argument("level", type=int, choices=[1, 2, 3, 4])
     parser.add_argument("weighted", type=str)
-    parser.add_argument("--fold", type=int, required=True,
-                        help="Fold index (0 to n_splits - 1)")
+    parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--labelset", type=str, default="pilot")
+    parser.add_argument("--held-out-frac", type=float, default=0.20)
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -57,18 +53,20 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(f"TRAIN CV  {run_id}")
-    logger.info(f"  data_path : {data_path}")
-    logger.info(f"  level     : {level}")
-    logger.info(f"  fold      : {fold} / {CV.n_splits - 1}")
-    logger.info(f"  weighted  : {weighted}")
-    logger.info(f"  labelset  : {args.labelset}")
+    logger.info(f"  data_path     : {data_path}")
+    logger.info(f"  level         : {level}")
+    logger.info(f"  fold          : {fold} / {CV.n_splits - 1}")
+    logger.info(f"  weighted      : {weighted}")
+    logger.info(f"  labelset      : {args.labelset}")
+    logger.info(f"  held_out_frac : {args.held_out_frac:.0%}")
+    logger.info(f"  seed          : {args.seed}")
     logger.info("=" * 60)
 
-    from config.config import LEVEL_CONFIGS, XGB, OUTPUT_DIR, LABEL_COLUMNS
-    from data.loader import (load_spectra, remap_labels, subsample_turf_rois,
+    from config.config import LEVEL_CONFIGS, XGB, LABEL_COLUMNS
+    from data.loader import (load_spectra, remap_labels, sample_held_out_rois,
                              split_data_cv, get_feature_columns, encode_labels,
                              compute_sample_weights, make_dmatrix,
-                             save_split_metadata)
+                             save_split_metadata, patch_level_configs)
     from models.trainer import build_params, patch_num_class, train_model, save_model, save_training_metadata
     from utils.io import save_json
 
@@ -76,9 +74,6 @@ def main() -> None:
         logger.error(f"Data file not found: {data_path}")
         sys.exit(1)
 
-    lvl_cfg = LEVEL_CONFIGS[level]
-
-    # CV output directory: outputs/spectra_A/level_3_cv/fold_0/
     suffix = "" if weighted else "_unweighted"
     out_dir = Path(OUTPUT_DIR) / f"spectra_{spectra}" / f"level_{level}_cv{suffix}" / f"fold_{fold}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -86,29 +81,31 @@ def main() -> None:
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
-    df = subsample_turf_rois(df, spectra=spectra, random_seed=42)
+    df = sample_held_out_rois(df, held_out_frac=args.held_out_frac,
+                              random_seed=args.seed, spectra=spectra)
 
+    # Patch n_classes for Levels 1, 2, 3 dynamically from data
+    patch_level_configs(df)
+
+    # Level 4: handled separately
     if level == 4:
         n_rois = df[LABEL_COLUMNS[4]].nunique()
         LEVEL_CONFIGS[4].n_classes = n_rois
         logger.info(f"Level 4 n_classes set dynamically: {n_rois}")
 
+    lvl_cfg = LEVEL_CONFIGS[level]
     feature_cols = get_feature_columns(df)
 
     # ---- CV split ---------------------------------------------------------
     train_df, val_df = split_data_cv(df, level, fold)
 
-    # Fit encoder on FULL dataset — ensures all classes are known even if
-    # some appear only in val fold (can happen with rare classes in Level 4)
     from sklearn.preprocessing import LabelEncoder
-    from config.config import LABEL_COLUMNS
     label_col = LABEL_COLUMNS[level]
     le = LabelEncoder()
     le.fit(df[label_col])
     y_train = le.transform(train_df[label_col])
     y_val = le.transform(val_df[label_col])
 
-    # Save fold metadata
     save_json({
         "fold": fold,
         "n_splits": CV.n_splits,
