@@ -2692,6 +2692,658 @@ def cv_vs_held_out_split_chart(
 
 
 # ---------------------------------------------------------------------------
+# Family share stacked bar  (cross-model, Chart 1)
+# ---------------------------------------------------------------------------
+
+def load_shap_by_family(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        weighted: bool = True,
+) -> "pd.DataFrame | None":
+    """Loads shap_by_family.csv for one model. Returns None if missing."""
+    suffix = "" if weighted else "_unweighted"
+    path = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}" / "shap_by_family.csv"
+    if not path.exists():
+        logger.warning(f"Missing: {path}")
+        return None
+    df = pd.read_csv(path, index_col=0)
+    logger.info(f"Loaded: {path}")
+    return df
+
+
+def load_scale_response(
+        output_dir: Path,
+        spectra: str,
+        level: int,
+        weighted: bool = True,
+) -> "pd.DataFrame | None":
+    """Loads scale_response.csv for one model. Returns None if missing."""
+    suffix = "" if weighted else "_unweighted"
+    path = output_dir / f"spectra_{spectra}" / f"level_{level}{suffix}" / "scale_response.csv"
+    if not path.exists():
+        logger.warning(f"Missing: {path}")
+        return None
+    df = pd.read_csv(path)
+    df["spectra"] = spectra
+    df["level"] = level
+    logger.info(f"Loaded: {path}")
+    return df
+
+
+def family_share_bar(
+        output_dir: Path,
+        levels: list[int] = None,
+        spectra_types: list[str] = None,
+        weighted: bool = True,
+        shap_col: str = "mean_abs_shap_global",
+        out_path: "Path | None" = None,
+        **kwargs,
+) -> None:
+    """
+    Stacked bar chart showing each feature family's fractional share of total
+    mean |SHAP| across all 16 models (4 spectra × 4 levels).
+
+    Bars are grouped by level with dashed separators and level headers above.
+    Families: spectral (blue), glcm (teal), sdiv (amber).
+    A percentage label is printed inside each segment when ≥ 6%.
+
+    Reads shap_by_family.csv from each model directory. The CSV must contain
+    a column matching `shap_col` and a 'family' column (or family in the index).
+
+    Args:
+        output_dir:    Root output directory (e.g. Path('outputs')).
+        levels:        Hierarchy levels to include. Defaults to [3, 2, 1].
+        spectra_types: List of spectra labels. Defaults to ['A','B','C','D'].
+        weighted:      Use weighted model outputs.
+        shap_col:      SHAP column to aggregate by (default: mean_abs_shap_global).
+        out_path:      Output PNG path. Auto-generated if None.
+    """
+    levels = levels or [3, 2, 1]
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+
+    # ── collect ───────────────────────────────────────────────────────────────
+    records = []
+    for level in levels:
+        for sp in spectra_types:
+            df = load_shap_by_family(output_dir, sp, level, weighted)
+            if df is None:
+                continue
+            if "family" in df.columns:
+                df = df.set_index("family")
+            if shap_col not in df.columns:
+                logger.warning(
+                    f"Column '{shap_col}' not in shap_by_family for {sp} L{level}; "
+                    f"available: {list(df.columns)}"
+                )
+                continue
+            for family, row in df.iterrows():
+                records.append({
+                    "spectra": sp,
+                    "level": level,
+                    "family": str(family),
+                    "shap": float(row[shap_col]),
+                })
+
+    if not records:
+        logger.error("No shap_by_family data found — aborting family_share_bar.")
+        return
+
+    long = pd.DataFrame(records)
+
+    # fractional share within each model
+    totals = long.groupby(["spectra", "level"])["shap"].transform("sum")
+    long["share"] = long["shap"] / totals.replace(0, np.nan)
+
+    # pivot → (level, spectra) × family
+    wide = long.pivot_table(
+        index=["level", "spectra"], columns="family", values="share", aggfunc="mean"
+    ).fillna(0)
+
+    family_order = [f for f in ["spectral", "glcm", "sdiv"] if f in wide.columns]
+    family_order += [c for c in wide.columns if c not in family_order]
+    wide = wide[family_order]
+
+    # ── build x positions with inter-level gap ────────────────────────────────
+    bar_labels = []
+    x_positions = []
+    level_midpoints = {}
+    x = 0
+    for level in levels:
+        group_start = x
+        for sp in spectra_types:
+            if (level, sp) in wide.index:
+                bar_labels.append(sp)
+                x_positions.append(x)
+                x += 1
+        group_end = x - 1
+        level_midpoints[level] = (group_start + group_end) / 2
+        x += 0.9  # inter-group gap
+
+    ordered_index = [
+        (level, sp)
+        for level in levels for sp in spectra_types
+        if (level, sp) in wide.index
+    ]
+    wide = wide.loc[ordered_index]
+
+    # ── plot ──────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(9, len(x_positions) * 0.78 + 2.5), 5.0))
+
+    bottoms = np.zeros(len(wide))
+    for family in family_order:
+        values = wide[family].values
+        colour = FAMILY_COLOURS.get(family, "#888780")
+        label = FAMILY_LABELS.get(family, family.capitalize())
+        ax.bar(x_positions, values, bottom=bottoms,
+               color=colour, label=label,
+               width=0.72, edgecolor="white", linewidth=0.5, zorder=2)
+        for xi, (v, b) in enumerate(zip(values, bottoms)):
+            if v >= 0.06:
+                ax.text(x_positions[xi], b + v / 2, f"{v:.0%}",
+                        ha="center", va="center", fontsize=6.5,
+                        color="white", fontweight=500)
+        bottoms += values
+
+    # level separators (between groups, not at edges)
+    x = 0
+    sep_xs = []
+    for level in levels:
+        n_in = sum(1 for sp in spectra_types if (level, sp) in set(ordered_index))
+        x += n_in
+        sep_xs.append(x - 0.5 + 0.45)
+        x += 0.9
+    for sx in sep_xs[:-1]:
+        ax.axvline(sx, color="#bbbbbb", linewidth=1.0, linestyle="--", zorder=0)
+
+    # level headers above bars via transAxes
+    x_span = max(x_positions) - min(x_positions) if len(x_positions) > 1 else 1
+    for level, mid in level_midpoints.items():
+        frac = (mid - min(x_positions)) / x_span if x_span else 0.5
+        ax.text(frac, 1.025, f"Level {level}",
+                transform=ax.transAxes,
+                ha="center", va="bottom",
+                fontsize=9, fontweight=500, color="#333333")
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(bar_labels, fontsize=9)
+    ax.set_xlabel("Spectra", fontsize=10)
+    ax.set_ylabel("Share of mean |SHAP|", fontsize=10)
+    ax.set_ylim(0, 1.0)
+    ax.yaxis.set_major_formatter(plt.matplotlib.ticker.PercentFormatter(xmax=1))
+    ax.set_xlim(min(x_positions) - 0.5, max(x_positions) + 0.5)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(True, axis="y", alpha=0.2, linewidth=0.5, zorder=0)
+    ax.set(**_ax_kwargs(kwargs))
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.85,
+              title="Feature family", title_fontsize=9)
+
+    fig.suptitle(
+        f"Feature family share of SHAP importance — "
+        f"{'Weighted' if weighted else 'Unweighted'} models",
+        fontsize=11, y=1.04,
+    )
+    fig.tight_layout()
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"family_share_bar_levels{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Family share bar saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Per-feature scale response (small multiples, Chart 3)
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_GLCM_FEAT_RE = _re.compile(r"^(energy|entropy|homogeneity|contrast)_window_(\d+)$")
+_SDIV_FEAT_RE = _re.compile(r"^sdiv_(.+)_plot_(\d+)$")
+
+
+def _parse_feature(col: str) -> tuple[str, str, int] | None:
+    """
+    Returns (family, metric, window_size) for GLCM/sdiv columns, else None.
+    family  : 'glcm' | 'sdiv'
+    metric  : e.g. 'contrast', 'alpha_local'
+    window_size: int pixels
+    """
+    m = _GLCM_FEAT_RE.match(col)
+    if m:
+        return "glcm", m.group(1), int(m.group(2))
+    m = _SDIV_FEAT_RE.match(col)
+    if m:
+        return "sdiv", m.group(1), int(m.group(2))
+    return None
+
+
+def feature_scale_strip(
+        output_dir: Path,
+        levels: list[int] = None,
+        spectra_types: list[str] = None,
+        weighted: bool = True,
+        shap_col: str = "mean_abs_shap_global",
+        glcm_order: list[str] | None = None,
+        sdiv_order: list[str] | None = None,
+        out_path: "Path | None" = None,
+        **kwargs,
+) -> None:
+    """
+    Small-multiples strip plot of scale-response curves broken out by individual
+    feature (metric × window size) for GLCM and sdiv families.
+
+    Layout: two column groups sharing a common figure.
+      Left  — GLCM: 2×2 grid of subplots (energy, entropy, homogeneity, contrast).
+      Right — sdiv: 2×1 column (alpha_local, beta_local).
+
+    Each subplot:
+      x-axis  — window size on a log₂ scale (labelled with actual pixel sizes).
+      y-axis  — mean |SHAP| (independent per panel so peak shapes are legible).
+      Dots    — individual (spectra × level) models, jittered horizontally.
+      Encoding: colour = reflectance green / derivative purple;
+                marker = circle (A/B) / diamond (C/D);
+                opacity = level (L3 opaque → L1 faint).
+      Grey IQR band + dark median line across all 16 models.
+
+    Reads feature_importance_shap.csv from each model directory.
+    Window size and metric are parsed directly from column names using the
+    same regex as get_family().
+
+    Args:
+        output_dir:   Root output directory.
+        levels:       Levels to include. Defaults to [3, 2, 1].
+        spectra_types: Spectra to include. Defaults to ['A','B','C','D'].
+        weighted:     Use weighted model outputs.
+        shap_col:     SHAP column in feature_importance_shap.csv
+                      (default: mean_abs_shap_global).
+        glcm_order:   Display order for GLCM metrics.
+                      Defaults to ['contrast','dissimilarity','homogeneity','energy'].
+        sdiv_order:   Display order for sdiv metrics.
+                      Defaults to ['alpha_local','beta_local'].
+        out_path:     Output PNG path. Auto-generated if None.
+    """
+    import matplotlib.lines as mlines
+    import matplotlib.gridspec as gridspec
+
+    levels = levels or [3, 2, 1]
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+    glcm_order = glcm_order or ["contrast", "dissimilarity", "homogeneity", "energy"]
+    sdiv_order = sdiv_order or ["alpha_local", "beta_local"]
+
+    SP_COLOUR = {"A": "#009E73", "B": "#CC79A7", "C": "#009E73", "D": "#CC79A7"}
+    SP_MARKER = {"A": "o", "B": "o", "C": "D", "D": "D"}
+    LEVEL_ALPHA = {3: 1.0, 2: 0.62, 1: 0.35}
+
+    # ── collect per-feature SHAP values from importance CSVs ─────────────────
+    records = []
+    for level in levels:
+        for sp in spectra_types:
+            imp = load_importance(output_dir, sp, level, weighted)
+            if imp is None or shap_col not in imp.columns:
+                continue
+            for col, row in imp[[shap_col]].iterrows():
+                parsed = _parse_feature(col)
+                if parsed is None:
+                    continue
+                family, metric, ws = parsed
+                records.append({
+                    "spectra": sp,
+                    "level": level,
+                    "family": family,
+                    "metric": metric,
+                    "window_size": ws,
+                    "shap": float(row[shap_col]),
+                })
+
+    if not records:
+        logger.error("No GLCM/sdiv features found in importance CSVs — aborting.")
+        return
+
+    df = pd.DataFrame(records)
+
+    # determine which metrics are actually present
+    glcm_metrics = [m for m in glcm_order if m in df.loc[df.family == "glcm", "metric"].unique()]
+    sdiv_metrics = [m for m in sdiv_order if m in df.loc[df.family == "sdiv", "metric"].unique()]
+    # append any unlisted metrics at the end (defensive)
+    for m in df.loc[df.family == "glcm", "metric"].unique():
+        if m not in glcm_metrics:
+            glcm_metrics.append(m)
+    for m in df.loc[df.family == "sdiv", "metric"].unique():
+        if m not in sdiv_metrics:
+            sdiv_metrics.append(m)
+
+    n_glcm = len(glcm_metrics)  # typically 4
+    n_sdiv = len(sdiv_metrics)  # typically 2
+
+    # ── figure layout via GridSpec ────────────────────────────────────────────
+    # Left block: ceil(n_glcm/2) rows × 2 cols for GLCM
+    # Right block: n_sdiv rows × 1 col for sdiv
+    # Separated by a wider wspace
+    glcm_cols = 2
+    glcm_rows = (n_glcm + 1) // 2
+    sdiv_rows = n_sdiv
+    fig_rows = max(glcm_rows, sdiv_rows)
+
+    fig_w = 5.5 * glcm_cols + 0.6 + 3.2  # left block + gap + right block
+    fig_h = max(3.5 * fig_rows, 5.0)
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    # outer grid: two columns (GLCM block | sdiv block), separated by extra space
+    outer = gridspec.GridSpec(
+        1, 2,
+        width_ratios=[glcm_cols * 5.5, 3.2],
+        wspace=0.12,
+        figure=fig,
+    )
+    # inner grids
+    glcm_gs = gridspec.GridSpecFromSubplotSpec(
+        glcm_rows, glcm_cols, subplot_spec=outer[0], hspace=0.55, wspace=0.35
+    )
+    sdiv_gs = gridspec.GridSpecFromSubplotSpec(
+        sdiv_rows, 1, subplot_spec=outer[1], hspace=0.55
+    )
+
+    rng = np.random.default_rng(42)
+
+    def _draw_panel(ax, family, metric, colour_label):
+        sub = df[(df.family == family) & (df.metric == metric)]
+        if sub.empty:
+            ax.set_visible(False)
+            return
+
+        window_sizes = sorted(sub["window_size"].unique())
+        log_x = {ws: float(np.log2(ws)) for ws in window_sizes}
+        xs = [log_x[ws] for ws in window_sizes]
+
+        # IQR band + median
+        agg = (
+            sub.groupby("window_size")["shap"]
+            .agg(q25=lambda s: s.quantile(0.25),
+                 median="median",
+                 q75=lambda s: s.quantile(0.75))
+            .loc[window_sizes]
+        )
+        ax.fill_between(xs, agg["q25"].values, agg["q75"].values,
+                        color="#cccccc", alpha=0.55, zorder=1)
+        ax.plot(xs, agg["median"].values,
+                color="#555555", linewidth=1.6, zorder=3)
+
+        # individual model dots
+        for _, row in sub.iterrows():
+            sp = str(row["spectra"])
+            lvl = int(row["level"])
+            ws = float(row["window_size"])
+            xj = log_x[ws] + rng.uniform(-0.09, 0.09)
+            ax.scatter(xj, float(row["shap"]),
+                       color=SP_COLOUR[sp], marker=SP_MARKER[sp],
+                       s=36, alpha=LEVEL_ALPHA.get(lvl, 0.6),
+                       edgecolors="none", zorder=4)
+
+        # highlight the window with the highest median SHAP
+        peak_ws = agg["median"].idxmax()
+        peak_x = log_x[peak_ws]
+        # y anchor: top of data range (use max of q75 + dots, not ax.get_ylim()
+        # which is still the matplotlib default [0,1] at this point)
+        data_top = max(sub["shap"].max(), agg["q75"].max())
+        ax.axvline(peak_x, color="#999999", linewidth=0.8,
+                   linestyle=":", zorder=2, alpha=0.7)
+        ax.text(peak_x, data_top * 1.04,
+                f" {int(peak_ws)}px", fontsize=7, color="#666666",
+                va="bottom", ha="left", zorder=5)
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels([str(int(ws)) for ws in window_sizes], fontsize=7.5)
+        ax.set_xlabel("Window (px)", fontsize=8)
+        ax.set_ylabel("Mean |SHAP|", fontsize=8)
+        ax.set_title(colour_label, fontsize=9, fontweight=500,
+                     color=FAMILY_COLOURS.get(family, "#333333"))
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.grid(True, axis="y", alpha=0.18, linewidth=0.5)
+        ax.tick_params(axis="both", labelsize=7.5)
+
+    # ── draw GLCM panels ──────────────────────────────────────────────────────
+    for i, metric in enumerate(glcm_metrics):
+        r, c = divmod(i, glcm_cols)
+        ax = fig.add_subplot(glcm_gs[r, c])
+        _draw_panel(ax, "glcm", metric, metric.capitalize())
+
+    # ── draw sdiv panels ──────────────────────────────────────────────────────
+    sdiv_display = {"alpha_local": "α_local", "beta_local": "β_local"}
+    for i, metric in enumerate(sdiv_metrics):
+        ax = fig.add_subplot(sdiv_gs[i, 0])
+        _draw_panel(ax, "sdiv", metric, sdiv_display.get(metric, metric))
+
+    # ── column group headers ──────────────────────────────────────────────────
+    # Draw via fig.text using approximate normalised coordinates
+    glcm_centre = outer[0].get_position(fig).x0 + outer[0].get_position(fig).width / 2
+    sdiv_centre = outer[1].get_position(fig).x0 + outer[1].get_position(fig).width / 2
+    top_y = outer[0].get_position(fig).y1 + 0.03
+    fig.text(glcm_centre, top_y, "GLCM texture features",
+             ha="center", va="bottom", fontsize=10, fontweight=600,
+             color=FAMILY_COLOURS["glcm"])
+    fig.text(sdiv_centre, top_y, "Spectral diversity features",
+             ha="center", va="bottom", fontsize=10, fontweight=600,
+             color=FAMILY_COLOURS["sdiv"])
+
+    # ── shared legend — placed outside right edge to avoid obscuring sdiv panels ──
+    legend_elements = [
+        mlines.Line2D([0], [0], color="#555555", linewidth=1.6,
+                      label="Median (all models)"),
+        mpatches.Patch(facecolor="#cccccc", alpha=0.7, label="IQR (all models)"),
+        mlines.Line2D([0], [0], marker="o", color="w",
+                      markerfacecolor="#009E73", markeredgecolor="none",
+                      markersize=7, label="Reflectance A/B (○)"),
+        mlines.Line2D([0], [0], marker="D", color="w",
+                      markerfacecolor="#009E73", markeredgecolor="none",
+                      markersize=7, label="Reflectance C/D (◆)"),
+        mlines.Line2D([0], [0], marker="o", color="w",
+                      markerfacecolor="#CC79A7", markeredgecolor="none",
+                      markersize=7, label="Derivative B/D (purple)"),
+    ]
+    for lvl, alph in sorted(LEVEL_ALPHA.items(), reverse=True):
+        legend_elements.append(
+            mlines.Line2D([0], [0], marker="o", color="w",
+                          markerfacecolor="#555555", markeredgecolor="none",
+                          markersize=7, alpha=alph, label=f"Level {lvl}")
+        )
+    fig.legend(handles=legend_elements, fontsize=8, framealpha=0.85,
+               title="Encoding", title_fontsize=8,
+               loc="lower left",
+               bbox_to_anchor=(1.0, 0.0))
+
+    fig.suptitle(
+        f"Per-feature scale-response curves — mean |SHAP| vs window size\n"
+        f"({'Weighted' if weighted else 'Unweighted'}, "
+        f"Levels {levels}, Spectra {spectra_types})",
+        fontsize=11, y=1.01,
+    )
+    fig.subplots_adjust(right=0.88)  # reserve right margin for external legend
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"feature_scale_strip_levels{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Feature scale strip saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Scale response strip  (cross-model, Chart 2)
+# ---------------------------------------------------------------------------
+
+def scale_response_strip(
+        output_dir: Path,
+        levels: list[int] = None,
+        spectra_types: list[str] = None,
+        weighted: bool = True,
+        shap_col: str = "mean_abs_shap",
+        out_path: "Path | None" = None,
+        **kwargs,
+) -> None:
+    """
+    Strip + IQR-band plot of scale-response curves across all 16 models.
+    Two subplots: GLCM (left) and sdiv (right).
+
+    x-axis: window size plotted on a log2 scale (linear tick spacing,
+            labelled with actual pixel sizes).
+    y-axis: mean |SHAP| per window size per model.
+
+    Each dot = one (spectra × level) model:
+      Colour  — reflectance A/C = green  (#009E73),
+                derivative  B/D = purple (#CC79A7).
+      Marker  — A/B = circle, C/D = diamond.
+      Opacity — encodes level: L3 opaque → L1 faint.
+
+    A grey IQR band and median line summarise the 16-model distribution
+    per window size.
+
+    Reads scale_response.csv from each model directory. Expects columns:
+        family, window_size, <shap_col>.
+
+    Args:
+        output_dir:    Root output directory.
+        levels:        Levels to include. Defaults to [3, 2, 1].
+        spectra_types: Spectra to include. Defaults to ['A','B','C','D'].
+        weighted:      Use weighted model outputs.
+        shap_col:      SHAP column in scale_response.csv (default: mean_abs_shap).
+        out_path:      Output PNG path. Auto-generated if None.
+    """
+    import matplotlib.lines as mlines
+
+    levels = levels or [3, 2, 1]
+    spectra_types = spectra_types or ["A", "B", "C", "D"]
+
+    SP_COLOUR = {"A": "#009E73", "B": "#CC79A7", "C": "#009E73", "D": "#CC79A7"}
+    SP_MARKER = {"A": "o", "B": "o", "C": "D", "D": "D"}
+    LEVEL_ALPHA = {3: 1.0, 2: 0.62, 1: 0.35}  # highest level most opaque
+
+    # ── collect ───────────────────────────────────────────────────────────────
+    frames = []
+    for level in levels:
+        for sp in spectra_types:
+            df = load_scale_response(output_dir, sp, level, weighted)
+            if df is not None:
+                frames.append(df)
+
+    if not frames:
+        logger.error("No scale_response data found — aborting scale_response_strip.")
+        return
+
+    all_data = pd.concat(frames, ignore_index=True)
+
+    if shap_col not in all_data.columns:
+        candidates = [c for c in all_data.columns if "shap" in c.lower()]
+        if candidates:
+            shap_col = candidates[0]
+            logger.warning(f"shap_col not found; using '{shap_col}'.")
+        else:
+            logger.error(f"No SHAP column found in scale_response data — aborting.")
+            return
+
+    families = [f for f in ["glcm", "sdiv"] if f in all_data["family"].unique()]
+    family_titles = {"glcm": "GLCM texture", "sdiv": "Spectral diversity (sdiv)"}
+
+    fig, axes = plt.subplots(1, len(families), figsize=(6.2 * len(families), 5.0),
+                             sharey=False)
+    if len(families) == 1:
+        axes = [axes]
+
+    rng = np.random.default_rng(42)
+
+    for ax, family in zip(axes, families):
+        sub = all_data[all_data["family"] == family].copy()
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        window_sizes = sorted(sub["window_size"].unique())
+        log_x = {ws: float(np.log2(ws)) for ws in window_sizes}
+
+        # ── IQR band + median line ─────────────────────────────────────────
+        agg = (
+            sub.groupby("window_size")[shap_col]
+            .agg(q25=lambda s: s.quantile(0.25),
+                 median="median",
+                 q75=lambda s: s.quantile(0.75))
+            .loc[window_sizes]
+        )
+
+        xs = [log_x[ws] for ws in window_sizes]
+        ax.fill_between(xs, agg["q25"].values, agg["q75"].values,
+                        color="#cccccc", alpha=0.55, zorder=1, label="IQR")
+        ax.plot(xs, agg["median"].values,
+                color="#555555", linewidth=1.8, zorder=3, label="Median")
+
+        # ── individual model dots ─────────────────────────────────────────
+        for _, row in sub.iterrows():
+            sp = str(row["spectra"])
+            lvl = int(row["level"])
+            ws = float(row["window_size"])
+            val = float(row[shap_col])
+            xj = log_x[ws] + rng.uniform(-0.09, 0.09)
+            ax.scatter(xj, val,
+                       color=SP_COLOUR[sp], marker=SP_MARKER[sp],
+                       s=42, alpha=LEVEL_ALPHA.get(lvl, 0.6),
+                       edgecolors="none", zorder=4)
+
+        # ── x-axis on log2 scale ──────────────────────────────────────────
+        ax.set_xticks(xs)
+        ax.set_xticklabels([str(int(ws)) for ws in window_sizes], fontsize=9)
+        ax.set_xlabel("Window size (pixels)", fontsize=10)
+        ax.set_title(family_titles.get(family, family), fontsize=10, fontweight=500)
+        if ax is axes[0]:
+            ax.set_ylabel("Mean |SHAP|", fontsize=10)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.grid(True, axis="y", alpha=0.2, linewidth=0.5)
+
+    # ── shared legend ─────────────────────────────────────────────────────────
+    legend_elements = [
+        mlines.Line2D([0], [0], color="#555555", linewidth=1.8, label="Median (all models)"),
+        mpatches.Patch(facecolor="#cccccc", alpha=0.7, label="IQR (all models)"),
+        mlines.Line2D([0], [0], marker="o", color="w",
+                      markerfacecolor="#009E73", markeredgecolor="none",
+                      markersize=7, label="Reflectance A/B (circle)"),
+        mlines.Line2D([0], [0], marker="D", color="w",
+                      markerfacecolor="#009E73", markeredgecolor="none",
+                      markersize=7, label="Reflectance C/D (diamond)"),
+        mlines.Line2D([0], [0], marker="o", color="w",
+                      markerfacecolor="#CC79A7", markeredgecolor="none",
+                      markersize=7, label="Derivative B/D (purple)"),
+    ]
+    for lvl, alph in sorted(LEVEL_ALPHA.items(), reverse=True):
+        legend_elements.append(
+            mlines.Line2D([0], [0], marker="o", color="w",
+                          markerfacecolor="#555555", markeredgecolor="none",
+                          markersize=7, alpha=alph, label=f"Level {lvl}")
+        )
+    axes[-1].legend(handles=legend_elements, fontsize=8, framealpha=0.85,
+                    title="Encoding", title_fontsize=8,
+                    loc="upper right")
+
+    fig.suptitle(
+        f"Scale-response curves — mean |SHAP| vs window size across all models\n"
+        f"({'Weighted' if weighted else 'Unweighted'}, "
+        f"Levels {levels}, Spectra {spectra_types})",
+        fontsize=11, y=1.02,
+    )
+    fig.tight_layout()
+
+    if out_path is None:
+        lvl_str = "_".join(str(l) for l in levels)
+        out_path = output_dir / f"scale_response_strip_levels{lvl_str}.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Scale response strip saved: {out_path}")
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2886,7 +3538,7 @@ def entropy_dot_plot(
                     ha="center", va="top", fontsize=7, color="#444444")
 
         ax.set_xlim(-0.5, 3.7)
-        ax.set_ylim(0.0, 0.3)
+        ax.set_ylim(0.0, 0.5)
         ax.set_xticks(XTICKS)
         ax.set_xticklabels(XLABELS, fontsize=10)
         ax.set_xlabel("Spectra", fontsize=10)
@@ -2933,6 +3585,8 @@ def parse_args() -> argparse.Namespace:
                         choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "interesting",
                                  "umap", "pairwise", "cv_held_out", "cv_stability", "cv_delta_heatmap",
                                  "held_out_dot", "entropy_dot",
+                                 "family_share", "scale_response_strip",
+                                 "feature_scale_strip",
                                  "both"], default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
@@ -3036,6 +3690,32 @@ def main() -> None:
         entropy_dot_plot(
             comparison_csv=args.comparison_csv,
             levels=args.levels,
+        )
+
+    if args.type == "family_share":
+        family_share_bar(
+            output_dir=args.output_dir,
+            levels=args.levels,
+            spectra_types=args.spectra,
+            weighted=weighted,
+            shap_col=args.shap_col,
+        )
+
+    if args.type == "feature_scale_strip":
+        feature_scale_strip(
+            output_dir=args.output_dir,
+            levels=args.levels,
+            spectra_types=args.spectra,
+            weighted=weighted,
+            shap_col=args.shap_col,
+        )
+
+    if args.type == "scale_response_strip":
+        scale_response_strip(
+            output_dir=args.output_dir,
+            levels=args.levels,
+            spectra_types=args.spectra,
+            weighted=weighted,
         )
 
     if args.type in ("bump", "both"):
