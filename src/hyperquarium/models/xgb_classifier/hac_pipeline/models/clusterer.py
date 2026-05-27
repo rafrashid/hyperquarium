@@ -70,11 +70,6 @@ def fit_pca(
     # Save loadings: (n_components × n_features)
     loadings_df = pd.DataFrame(
         pca.components_,
-        columns=[f"pc{i + 1}" for i in range(n_components)],
-    ).T  # shape: (n_components, n_features) → transpose to (n_features, n_components)
-    # Cleaner: rows = PCs, cols = original features
-    loadings_df = pd.DataFrame(
-        pca.components_,
         index=[f"PC{i + 1}" for i in range(n_components)],
     )
     loadings_path = output_dir / "pca_loadings.csv"
