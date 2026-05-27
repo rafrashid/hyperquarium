@@ -156,6 +156,30 @@ def load_turf_sample(
             f"Check labelset='{labelset}' and label_level3 mapping."
         )
 
+    # Drop all-NaN columns first, then rows with any NaN.
+    # All-NaN columns = feature produced no valid estimates for any turf ROI.
+    # Row-level NaNs = GLCM border effects and specdiv grid misalignment.
+    n_cols_before = df_turf.shape[1]
+    df_turf = df_turf.dropna(axis=1, how="all")
+    n_cols_dropped = n_cols_before - df_turf.shape[1]
+    if n_cols_dropped:
+        logger.warning(f"Dropped {n_cols_dropped} all-NaN columns.")
+
+    n_rows_before = len(df_turf)
+    df_turf = df_turf.dropna(axis=0)
+    n_rows_dropped = n_rows_before - len(df_turf)
+    if n_rows_dropped:
+        logger.warning(
+            f"Dropped {n_rows_dropped:,} rows containing NaN values "
+            f"({n_rows_dropped / n_rows_before * 100:.1f}% of turf pixels)."
+        )
+
+    if df_turf.empty:
+        raise ValueError(
+            "No turf_algae pixels remain after NaN removal. "
+            "Check feature extraction outputs for systematic missing data."
+        )
+
     # Stratified sample
     df_sample = _stratified_sample(
         df_turf,
