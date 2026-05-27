@@ -160,6 +160,7 @@ def main() -> None:
         pixels_per_roi=cfg.pixels_per_roi,
         random_seed=cfg.random_seed,
         labelset=args.labelset,
+        nan_col_threshold=cfg.nan_col_threshold,
     )
 
     # ------------------------------------------------------------------

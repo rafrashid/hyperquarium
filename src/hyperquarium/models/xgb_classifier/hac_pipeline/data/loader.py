@@ -114,6 +114,7 @@ def load_turf_sample(
         pixels_per_roi: int,
         random_seed: int,
         labelset: str = "pilot",
+        nan_col_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Load parquet, remap labels, filter to turf_algae, stratified sample.
 
@@ -156,21 +157,24 @@ def load_turf_sample(
             f"Check labelset='{labelset}' and label_level3 mapping."
         )
 
-    # Drop all-NaN columns first, then rows with any NaN.
-    # All-NaN columns = feature produced no valid estimates for any turf ROI.
-    # Row-level NaNs = GLCM border effects and specdiv grid misalignment.
-    n_cols_before = df_turf.shape[1]
-    df_turf = df_turf.dropna(axis=1, how="all")
-    n_cols_dropped = n_cols_before - df_turf.shape[1]
-    if n_cols_dropped:
-        logger.warning(f"Dropped {n_cols_dropped} all-NaN columns.")
+    # Drop columns where >50% of turf rows are NaN — these are large window/plot
+    # sizes (GLCM ≥ window_51, specdiv ≥ plot_51) that are essentially empty.
+    # Then drop remaining rows with any NaN (genuine border-effect pixels).
+    nan_frac = df_turf.isna().mean()
+    high_nan_cols = nan_frac[nan_frac > nan_col_threshold].index.tolist()
+    if high_nan_cols:
+        logger.warning(
+            f"Dropping {len(high_nan_cols)} columns with >50% NaN "
+            f"(large window/plot sizes): {high_nan_cols}"
+        )
+        df_turf = df_turf.drop(columns=high_nan_cols)
 
     n_rows_before = len(df_turf)
     df_turf = df_turf.dropna(axis=0)
     n_rows_dropped = n_rows_before - len(df_turf)
     if n_rows_dropped:
         logger.warning(
-            f"Dropped {n_rows_dropped:,} rows containing NaN values "
+            f"Dropped {n_rows_dropped:,} rows with remaining NaN values "
             f"({n_rows_dropped / n_rows_before * 100:.1f}% of turf pixels)."
         )
 

@@ -41,6 +41,16 @@ class HACConfig:
     """Fraction of variance retained after PCA. Controls number of components."""
 
     # ------------------------------------------------------------------
+    # NaN handling
+    # ------------------------------------------------------------------
+    nan_col_threshold: float = 0.5
+    """Drop feature columns where the fraction of NaN rows exceeds this value.
+    Empirically motivated by the NaN distribution in the compiled parquet:
+    - pilot dataset: GLCM/specdiv window/plot sizes >= 51 are ~100% NaN → 0.5
+    - reefcompare dataset: cutoff is around window/plot size 75 → adjust accordingly.
+    """
+
+    # ------------------------------------------------------------------
     # Clustering
     # ------------------------------------------------------------------
     k_values: list = field(default_factory=lambda: [2, 5, 10, 20])
