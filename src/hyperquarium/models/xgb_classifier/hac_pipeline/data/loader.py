@@ -17,7 +17,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Label remapping (mirrors xgb_pipeline convention)
+# Label remapping
 # ---------------------------------------------------------------------------
 
 RAW_LABEL_COLUMN = "label"
@@ -25,6 +25,13 @@ LABEL_MAPPING_LEVEL0_COL = "Level_0"
 LABEL_LEVEL3_COL = "label_level3"
 LABEL_LEVEL4_COL = "label_level4"
 ROI_ID_COL = "roi_ID"
+
+# Actual column names in labelset_mapping.csv -> internal names used throughout pipeline
+_MAPPING_LEVEL_COLS = {
+    "Level_1": "label_level1",
+    "Level_2": "label_level2",
+    "Level_3": "label_level3",
+}
 
 TURF_LEVEL3_VALUE = "turf_algae"
 
@@ -36,9 +43,10 @@ def remap_labels(
 ) -> pd.DataFrame:
     """Apply label hierarchy mapping to raw label column.
 
-    Loads labelset_mapping.csv, filters to the given labelset, and maps
-    raw labels to label_level1 / label_level2 / label_level3. Constructs
-    label_level4 as label_level2 + running ROI count per level2 class.
+    Loads labelset_mapping.csv (columns: labelset, Level_0, Level_1, Level_2, Level_3),
+    filters to the given labelset, and maps raw labels to label_level1/2/3.
+    Constructs label_level4 as label_level2 + running ROI count per Level_2 class,
+    consistent with xgb_pipeline convention.
 
     Rows with unmapped labels are dropped with a warning.
     """
@@ -50,6 +58,9 @@ def remap_labels(
             f"No rows found in {mapping_path} for labelset='{labelset}'. "
             f"Available labelsets: {pd.read_csv(mapping_path)['labelset'].unique().tolist()}"
         )
+
+    # Rename Level_1/2/3 -> label_level1/2/3
+    mapping = mapping.rename(columns=_MAPPING_LEVEL_COLS)
 
     lookup = mapping.set_index(LABEL_MAPPING_LEVEL0_COL)[
         ["label_level1", "label_level2", "label_level3"]
@@ -68,7 +79,8 @@ def remap_labels(
     mapped_df.index = df.index
     df = pd.concat([df, mapped_df], axis=1)
 
-    # Construct label_level4: label_level2 + ROI running count
+    # Construct label_level4: label_level2 + running ROI count per Level_2 class
+    # Sort by roi_ID for deterministic ordering
     df = df.sort_values([ROI_ID_COL]).copy()
     roi_counts: dict[str, dict[str, int]] = {}
     level4_labels = []
@@ -78,8 +90,7 @@ def remap_labels(
         if l2 not in roi_counts:
             roi_counts[l2] = {}
         if roi not in roi_counts[l2]:
-            n = len(roi_counts[l2]) + 1
-            roi_counts[l2][roi] = n
+            roi_counts[l2][roi] = len(roi_counts[l2]) + 1
         level4_labels.append(f"{l2}_ROI_{roi_counts[l2][roi]:03d}")
     df[LABEL_LEVEL4_COL] = level4_labels
 
