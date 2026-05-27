@@ -2695,6 +2695,236 @@ def cv_vs_held_out_split_chart(
 # CLI
 # ---------------------------------------------------------------------------
 
+def held_out_dot_plot(
+        comparison_csv: Path,
+        levels: list[int] | None = None,
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    Dot plot comparing test set accuracy vs held-out ROI accuracy across spectra,
+    one sub-figure per level sharing y-axis [0, 1.08].
+
+    Reads held_out_accuracy_comparison.csv produced by summarise_held_out().
+
+    Spectra grouped as A/B and C/D. Reflectance (A, C) = green (#009E73),
+    derivative (B, D) = purple (#CC79A7). A/B = triangle markers, C/D = squares.
+    Main (test set) = filled, held-out = hollow. Arrow from main → held-out.
+    Value labels shown above each marker.
+
+    Args:
+        comparison_csv: Path to held_out_accuracy_comparison.csv.
+        levels:         Levels to plot. Defaults to [3, 2, 1].
+        out_path:       Output PNG path. Auto-generated alongside CSV if None.
+    """
+    import matplotlib.lines as mlines
+
+    levels = levels or [3, 2, 1]
+    df = pd.read_csv(comparison_csv)
+
+    COLOUR = {"A": "#009E73", "B": "#CC79A7", "C": "#009E73", "D": "#CC79A7"}
+    MARKER = {"A": "^", "B": "^", "C": "s", "D": "s"}
+    X_POS = {"A": 0, "B": 1, "C": 2.2, "D": 3.2}
+    XTICKS = [0, 1, 2.2, 3.2]
+    XLABELS = ["A", "B", "C", "D"]
+
+    n_levels = len(levels)
+    fig, axes = plt.subplots(1, n_levels, figsize=(n_levels * 3.5, 5.0),
+                             sharey=True)
+    if n_levels == 1:
+        axes = [axes]
+
+    for ax, level in zip(axes, levels):
+        sub = df[df["level"] == level]
+
+        for _, row in sub.iterrows():
+            sp = str(row["spectra"])
+            x = X_POS[sp]
+            colour = COLOUR[sp]
+            marker = MARKER[sp]
+            main_val = float(row["test_macro_f1"])
+            held_val = float(row["held_out_mean"])
+
+            # Arrow from main → held-out (tip at held-out marker edge)
+            ax.annotate(
+                "", xy=(x, held_val), xytext=(x, main_val),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color="#444444", alpha=0.7,
+                    linestyle="dotted",
+                    lw=1.2,
+                    mutation_scale=8,
+                ),
+                zorder=1,
+            )
+            # Main — filled
+            ax.scatter(x, main_val, color=colour, marker=marker,
+                       s=70, zorder=3, edgecolors=colour, linewidths=1.2)
+            # Held-out — hollow
+            ax.scatter(x, held_val, color="white", marker=marker,
+                       s=70, zorder=3, edgecolors=colour, linewidths=1.2)
+
+            # Value labels
+            ax.text(x, main_val + 0.012, f"{main_val:.3f}",
+                    ha="center", va="bottom", fontsize=7, color="#444444")
+            ax.text(x, held_val - 0.018, f"{held_val:.3f}",
+                    ha="center", va="top", fontsize=7, color="#444444")
+
+        ax.set_xlim(-0.5, 3.7)
+        ax.set_ylim(0, 1.08)  # extra headroom so labels near 1.0 don't clip
+        ax.set_xticks(XTICKS)
+        ax.set_xticklabels(XLABELS, fontsize=10)
+        ax.set_xlabel("Spectra", fontsize=10)
+        ax.set_title(f"Level {level}", fontsize=10)
+        ax.grid(False)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.axvline(1.6, color="#cccccc", linewidth=0.8, linestyle="--", zorder=0)
+
+    axes[0].set_ylabel("Accuracy", fontsize=10)
+
+    legend_elements = [
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#009E73",
+                      markeredgecolor="#009E73", markersize=7, label="Reflectance (A, C)"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#CC79A7",
+                      markeredgecolor="#CC79A7", markersize=7, label="Second derivative (B, D)"),
+        mlines.Line2D([0], [0], marker="s", color="w", markerfacecolor="#555555",
+                      markeredgecolor="#555555", markersize=7, label="C/D = squares"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#555555",
+                      markeredgecolor="#555555", markersize=7, label="Test set"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="white",
+                      markeredgecolor="#555555", markersize=7, label="Held-out"),
+    ]
+    axes[0].legend(handles=legend_elements, fontsize=8, framealpha=0.8,
+                   loc="lower left", title="Spectra type / source", title_fontsize=8)
+
+    fig.suptitle("Test set vs held-out accuracy by spectra and level",
+                 fontsize=11, y=1.01)
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = Path(comparison_csv).parent / "held_out_accuracy_dot_plot.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Held-out dot plot saved: {out_path}")
+
+
+def entropy_dot_plot(
+        comparison_csv: Path,
+        levels: list[int] | None = None,
+        out_path: Path | None = None,
+        **kwargs,
+) -> None:
+    """
+    Dot plot comparing main dataset entropy vs held-out entropy across spectra,
+    one sub-figure per level sharing y-axis [0.0, 0.3].
+
+    Reads entropy_comparison.csv produced by summarise_entropy().
+
+    Same colour/marker/grouping conventions as held_out_dot_plot():
+    green (#009E73) for reflectance (A, C), purple (#CC79A7) for derivative (B, D).
+    A/B = triangle markers, C/D = squares. Main = filled, held-out = hollow.
+    Arrow from main → held-out. Value labels shown above/below each marker.
+
+    Args:
+        comparison_csv: Path to entropy_comparison.csv.
+        levels:         Levels to plot. Defaults to [3, 2, 1].
+        out_path:       Output PNG path. Auto-generated alongside CSV if None.
+    """
+    import matplotlib.lines as mlines
+
+    levels = levels or [3, 2, 1]
+    df = pd.read_csv(comparison_csv)
+
+    COLOUR = {"A": "#009E73", "B": "#CC79A7", "C": "#009E73", "D": "#CC79A7"}
+    MARKER = {"A": "^", "B": "^", "C": "s", "D": "s"}
+    X_POS = {"A": 0, "B": 1, "C": 2.2, "D": 3.2}
+    XTICKS = [0, 1, 2.2, 3.2]
+    XLABELS = ["A", "B", "C", "D"]
+
+    n_levels = len(levels)
+    fig, axes = plt.subplots(1, n_levels, figsize=(n_levels * 3.5, 5.0),
+                             sharey=True)
+    if n_levels == 1:
+        axes = [axes]
+
+    for ax, level in zip(axes, levels):
+        sub = df[df["level"] == level]
+
+        for _, row in sub.iterrows():
+            sp = str(row["spectra"])
+            x = X_POS[sp]
+            colour = COLOUR[sp]
+            marker = MARKER[sp]
+            main_val = float(row["main_mean_entropy"])
+            held_val = float(row["held_out_mean_entropy"])
+
+            # Arrow from main → held-out
+            ax.annotate(
+                "", xy=(x, held_val), xytext=(x, main_val),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color="#444444", alpha=0.7,
+                    linestyle="dotted",
+                    lw=1.2,
+                    mutation_scale=8,
+                ),
+                zorder=1,
+            )
+            # Main — filled
+            ax.scatter(x, main_val, color=colour, marker=marker,
+                       s=70, zorder=3, edgecolors=colour, linewidths=1.2)
+            # Held-out — hollow
+            ax.scatter(x, held_val, color="white", marker=marker,
+                       s=70, zorder=3, edgecolors=colour, linewidths=1.2)
+
+            # Value labels
+            ax.text(x, held_val + 0.006, f"{held_val:.3f}",
+                    ha="center", va="bottom", fontsize=7, color="#444444")
+            ax.text(x, main_val - 0.006, f"{main_val:.3f}",
+                    ha="center", va="top", fontsize=7, color="#444444")
+
+        ax.set_xlim(-0.5, 3.7)
+        ax.set_ylim(0.0, 0.3)
+        ax.set_xticks(XTICKS)
+        ax.set_xticklabels(XLABELS, fontsize=10)
+        ax.set_xlabel("Spectra", fontsize=10)
+        ax.set_title(f"Level {level}", fontsize=10)
+        ax.grid(False)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.axvline(1.6, color="#cccccc", linewidth=0.8, linestyle="--", zorder=0)
+
+    axes[0].set_ylabel("Entropy (normalised)", fontsize=10)
+
+    legend_elements = [
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#009E73",
+                      markeredgecolor="#009E73", markersize=7, label="Reflectance (A, C)"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#CC79A7",
+                      markeredgecolor="#CC79A7", markersize=7, label="Second derivative (B, D)"),
+        mlines.Line2D([0], [0], marker="s", color="w", markerfacecolor="#555555",
+                      markeredgecolor="#555555", markersize=7, label="C/D = squares"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="#555555",
+                      markeredgecolor="#555555", markersize=7, label="Main dataset"),
+        mlines.Line2D([0], [0], marker="^", color="w", markerfacecolor="white",
+                      markeredgecolor="#555555", markersize=7, label="Held-out"),
+    ]
+    axes[0].legend(handles=legend_elements, fontsize=8, framealpha=0.8,
+                   loc="upper left", title="Spectra type / source", title_fontsize=8)
+
+    fig.suptitle("Main dataset vs held-out entropy by spectra and level",
+                 fontsize=11, y=1.01)
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = Path(comparison_csv).parent / "entropy_dot_plot.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Entropy dot plot saved: {out_path}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cross-model feature rank visualisations for the algal turf pipeline."
@@ -2702,6 +2932,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--type",
                         choices=["bump", "heatmap", "biplot", "wavelength", "beeswarm", "waterfall", "interesting",
                                  "umap", "pairwise", "cv_held_out", "cv_stability", "cv_delta_heatmap",
+                                 "held_out_dot", "entropy_dot",
                                  "both"], default="both",
                         help="Which chart(s) to produce (default: both)")
     parser.add_argument("--model-a", nargs=2, metavar=("SPECTRA", "LEVEL"),
@@ -2752,6 +2983,8 @@ def parse_args() -> argparse.Namespace:
                         help="Use unweighted model outputs (default: weighted)")
     parser.add_argument("--shap-col", type=str, default="mean_abs_shap_global",
                         help="SHAP column to rank by (default: mean_abs_shap_global)")
+    parser.add_argument("--comparison-csv", type=Path, default=None,
+                        help="Path to *_comparison.csv for held_out_dot or entropy_dot plots")
     return parser.parse_args()
 
 
@@ -2787,6 +3020,22 @@ def main() -> None:
             weighted=weighted,
             held_out_pattern=args.held_out_pattern,
             cv_metric=args.cv_metric,
+        )
+
+    if args.type == "held_out_dot":
+        if args.comparison_csv is None:
+            raise ValueError("--comparison-csv is required for held_out_dot")
+        held_out_dot_plot(
+            comparison_csv=args.comparison_csv,
+            levels=args.levels,
+        )
+
+    if args.type == "entropy_dot":
+        if args.comparison_csv is None:
+            raise ValueError("--comparison-csv is required for entropy_dot")
+        entropy_dot_plot(
+            comparison_csv=args.comparison_csv,
+            levels=args.levels,
         )
 
     if args.type in ("bump", "both"):

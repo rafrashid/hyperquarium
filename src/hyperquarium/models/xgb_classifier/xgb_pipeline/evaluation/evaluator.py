@@ -715,7 +715,33 @@ def summarise_held_out(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(out_path, index=False)
-    logger.info(f"Held-out summary saved: {out_path}")
+    logger.info(f"Held-out long-format summary saved: {out_path}")
+
+    # ── Wide-format comparison CSV — mirrors printed table, no flags ───────
+    comparison_rows = []
+    for spectra in spectra_types:
+        for level in levels:
+            test_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "original_test_set")]
+            held_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "held_out_rois")]
+            comparison_rows.append({
+                "spectra": spectra,
+                "level": level,
+                "test_macro_f1": (test_row["macro_f1"].iloc[0]
+                                  if not test_row.empty else None),
+                "held_out_mean": (held_row["prop_correct"].iloc[0]
+                                  if not held_row.empty else None),
+                "held_out_std": (held_row["prop_correct_std"].iloc[0]
+                                 if not held_row.empty else None),
+                "n_rois": (int(held_row["n_rois"].iloc[0])
+                           if not held_row.empty else None),
+            })
+    comparison_path = out_path.parent / "held_out_accuracy_comparison.csv"
+    pd.DataFrame(comparison_rows).to_csv(comparison_path, index=False)
+    logger.info(f"Held-out comparison table saved: {comparison_path}")
 
     return summary
 
@@ -891,6 +917,33 @@ def summarise_entropy(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(out_path, index=False)
-    logger.info(f"Entropy summary saved: {out_path}")
+    logger.info(f"Entropy long-format summary saved: {out_path}")
+
+    # ── Wide-format comparison CSV — mirrors printed table, no flags ───────
+    comparison_rows = []
+    for spectra in spectra_types:
+        for level in levels:
+            main_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "main_dataset")]
+            held_row = summary[(summary["spectra"] == spectra) &
+                               (summary["level"] == level) &
+                               (summary["source"] == "held_out")]
+            main_val = main_row["mean_entropy"].iloc[0] if not main_row.empty else None
+            held_val = held_row["mean_entropy"].iloc[0] if not held_row.empty else None
+            comparison_rows.append({
+                "spectra": spectra,
+                "level": level,
+                "main_mean_entropy": main_val,
+                "held_out_mean_entropy": held_val,
+                "delta_entropy": (round(held_val - main_val, 4)
+                                  if main_val is not None and held_val is not None
+                                  else None),
+                "n_held": (int(held_row["n_rois"].iloc[0])
+                           if not held_row.empty else None),
+            })
+    comparison_path = out_path.parent / "entropy_comparison.csv"
+    pd.DataFrame(comparison_rows).to_csv(comparison_path, index=False)
+    logger.info(f"Entropy comparison table saved: {comparison_path}")
 
     return summary
