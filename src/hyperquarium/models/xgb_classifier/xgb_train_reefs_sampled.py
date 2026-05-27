@@ -38,8 +38,11 @@ def parse_args() -> argparse.Namespace:
                         help="Hierarchy level (1, 2, or 3)")
     parser.add_argument("weighted", type=str,
                         help="Apply sample weights: true / false")
-    parser.add_argument("--labelset", type=str, default="pilot",
-                        help="Label mapping labelset filter (default: pilot)")
+    parser.add_argument("--labelset", type=str, default="reefcompare")
+    parser.add_argument("--held-out-frac", type=float, default=0.20,
+                        help="Fraction of ROIs per Level 2 class to hold out (default: 0.20)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for held-out sampling (default: 42)")
     return parser.parse_args()
 
 
@@ -93,7 +96,8 @@ def main() -> None:
     # ---- Load & prepare ---------------------------------------------------
     df = load_spectra(data_path)
     df = remap_labels(df, dataset=args.labelset)
-    df = sample_held_out_rois(df, spectra=spectra, random_seed=42)
+    df = sample_held_out_rois(df, held_out_frac=args.held_out_frac,
+                              random_seed=args.seed, spectra=spectra)
 
     # Patch n_classes for Levels 1, 2, 3 dynamically from data
     patch_level_configs(df)
