@@ -3447,7 +3447,7 @@ def held_out_dot_plot(
                       markeredgecolor="#555555", markersize=7, label="Held-out"),
     ]
     axes[0].legend(handles=legend_elements, fontsize=8, framealpha=0.8,
-                   loc="lower left", title="Spectra type / source", title_fontsize=8)
+                   loc="best", title="Spectra type / source", title_fontsize=8)
 
     fig.suptitle("Test set vs held-out accuracy by spectra and level",
                  fontsize=11, y=1.01)
@@ -3562,7 +3562,7 @@ def entropy_dot_plot(
                       markeredgecolor="#555555", markersize=7, label="Held-out"),
     ]
     axes[0].legend(handles=legend_elements, fontsize=8, framealpha=0.8,
-                   loc="upper left", title="Spectra type / source", title_fontsize=8)
+                   loc="best", title="Spectra type / source", title_fontsize=8)
 
     fig.suptitle("Main dataset vs held-out entropy by spectra and level",
                  fontsize=11, y=1.01)
