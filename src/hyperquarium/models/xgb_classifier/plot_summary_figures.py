@@ -34,7 +34,7 @@ FIGURE_DPI = 150
 SUBPLOT_WIDTH = 18  # inches — wide enough for all labels
 SUBPLOT_HEIGHT = 3.5  # inches per subplot row
 
-SPECDIV_VARS = ["alpha_sdiv", "beta_lcsd"]
+SPECDIV_VARS = ["alpha_local", "beta_local"]
 GLCM_FEATURES = ["contrast", "energy", "entropy", "homogeneity"]
 
 COLORBLIND_PALETTE = sns.color_palette("colorblind")
