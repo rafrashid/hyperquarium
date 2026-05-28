@@ -165,6 +165,15 @@ def remap_labels(
             f"Found {len(unmapped)} raw label(s) not in the '{dataset}' mapping: {unmapped}. "
             f"Valid labels are: {sorted(mapped_set)}"
         )
+        # If ALL labels are unmapped, treat as unlabelled — drop the label column
+        # and return early. prop_correct will be nan in NetCDF attrs.
+        mapped_rows = [lbl for lbl in raw_labels if lbl in mapped_set]
+        if not mapped_rows:
+            logger.warning(
+                msg + " — no labels match the mapping at all. "
+                      "Treating as unlabelled data (dropping label column)."
+            )
+            return df.drop(columns=[raw_label_col], errors='ignore').copy()
         if drop_unmapped:
             logger.warning(msg + " — dropping affected rows.")
             df = df[df[raw_label_col].isin(mapped_set)].copy()
@@ -209,13 +218,15 @@ def remap_labels(
         )
         roi_map["_rank"] = (
             roi_map.groupby(level2_col)[ROI_ID_COLUMN]
-            .transform(lambda x: (pd.factorize(x)[0] + 1))
-        )
-        roi_map[level4_col] = (
-                roi_map[level2_col].astype(str)
-                + "_ROI_"
-                + roi_map["_rank"].apply(lambda n: f"{n:03d}")
-        )
+            .transform(lambda x: pd.factorize(x)[0] + 1)
+        ).astype(int)
+        roi_map[level4_col] = [
+            f"{lv2}_ROI_{rank:03d}"
+            for lv2, rank in zip(
+                roi_map[level2_col].astype(str).tolist(),
+                roi_map["_rank"].tolist(),
+            )
+        ]
         roi_map = roi_map.drop(columns="_rank")
 
         # Also attach Level 1 for the full mapping table
