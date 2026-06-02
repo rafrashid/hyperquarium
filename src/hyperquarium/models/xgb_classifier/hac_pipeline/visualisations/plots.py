@@ -287,57 +287,132 @@ def plot_majority_vote_heatmap(
 # 7e — Feature separation dot plot (Cleveland-style)
 # ---------------------------------------------------------------------------
 
-def plot_feature_separation(
+def plot_spectral_separation(
         sep_df: pd.DataFrame,
         k: int,
-        n_top: int,
         output_dir: Path,
 ) -> None:
-    plot_df = sep_df.head(n_top).copy()
-    n_all = len(sep_df)
-    y_positions = np.arange(len(plot_df))[::-1]
+    """Figure 1: F-statistic vs wavelength (nm) for spectral features only.
 
-    fig, ax = plt.subplots(figsize=(10, max(6, len(plot_df) * 0.38)))
+    Line plot sorted from 475 nm to 705 nm. One continuous line connecting
+    all wavelength bands, showing where in the spectrum clusters are best
+    separated.
+    """
 
-    for i, (_, row) in enumerate(plot_df.iterrows()):
-        y = y_positions[i]
-        colour = FAMILY_COLOURS.get(row["family"], FAMILY_COLOURS["unknown"])
-        f_rank = row["f_rank"]
-        l_rank = row["loading_rank"]
-        ax.hlines(y, min(f_rank, l_rank), max(f_rank, l_rank),
-                  colors=colour, linewidths=0.8, alpha=0.5)
-        ax.scatter(f_rank, y, color=colour, s=55, zorder=3)
-        ax.scatter(l_rank, y, color=colour, s=55, zorder=3,
-                   facecolors="none", linewidths=1.5)
+    spectral = sep_df[sep_df["family"] == "spectral"].copy()
 
-        # If SHAP cross-reference present, add triangle marker
-        if "shap_rank" in row and not np.isnan(row["shap_rank"]):
-            ax.scatter(row["shap_rank"], y, color=colour, s=40, zorder=3,
-                       marker="^", alpha=0.7)
+    # Extract wavelength integer from column names like "475_nm"
+    spectral["wavelength"] = spectral["feature"].str.extract(r"(\d+)_nm").astype(int)
+    spectral = spectral.sort_values("wavelength")
 
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(plot_df["feature"].tolist(), fontsize=8)
-    ax.set_xlim(n_all + 1, 0)
-    ax.set_xlabel("Rank (lower = more important)", fontsize=10)
-    ax.axvline(x=n_all / 2, color="grey", linestyle="--",
-               linewidth=0.8, alpha=0.6)
+    if spectral.empty:
+        logger.warning("No spectral features found in sep_df — skipping spectral separation plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(spectral["wavelength"], spectral["f_statistic"],
+            color=FAMILY_COLOURS["spectral"], linewidth=1.5, zorder=2)
+    ax.fill_between(spectral["wavelength"], spectral["f_statistic"],
+                    alpha=0.15, color=FAMILY_COLOURS["spectral"])
+
+    ax.set_xlabel("Wavelength (nm)", fontsize=11)
+    ax.set_ylabel("F-statistic (ANOVA)", fontsize=11)
+    ax.set_xlim(spectral["wavelength"].min(), spectral["wavelength"].max())
+    ax.set_ylim(bottom=0)
     ax.set_title(
-        f"Feature separation — top {n_top} features (K={k})\n"
-        f"● F-statistic rank   ○ PCA loading rank"
-        + ("   ▲ SHAP rank (post-hoc)" if "shap_rank" in sep_df.columns else ""),
-        fontsize=10,
+        f"Spectral feature separation by wavelength (K={k})\n"
+        f"Higher F-statistic = greater between-cluster vs within-cluster variance",
+        fontsize=11,
     )
-
-    from matplotlib.lines import Line2D
-    handles = [
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=col, markersize=8, label=fam.upper())
-        for fam, col in FAMILY_COLOURS.items() if fam != "unknown"
-    ]
-    ax.legend(handles=handles, fontsize=8, loc="lower right")
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
 
     plt.tight_layout()
-    fig.savefig(output_dir / f"feature_separation_k{k}.png", dpi=150)
+    out_path = output_dir / f"feature_separation_spectral_k{k}.png"
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info(f"Feature separation dot plot saved: "
-                f"{output_dir / f'feature_separation_k{k}.png'}")
+    logger.info(f"Spectral separation plot saved: {out_path}")
+
+
+def plot_spatial_separation(
+        sep_df: pd.DataFrame,
+        k: int,
+        output_dir: Path,
+) -> None:
+    """Figure 2: F-statistic vs window/plot size for GLCM and specdiv features.
+
+    Two-panel figure. Left panel: GLCM — four lines, one per metric
+    (contrast, energy, entropy, homogeneity). Right panel: specdiv — two
+    lines (alpha_local, beta_local). X-axis sorted ascending by window/plot
+    size. All line plots with markers.
+    """
+
+    # --- GLCM ---
+    glcm = sep_df[sep_df["family"] == "glcm"].copy()
+    glcm["metric"] = glcm["feature"].str.extract(
+        r"^(contrast|energy|entropy|homogeneity)"
+    )
+    glcm["window_size"] = glcm["feature"].str.extract(r"_window_(\d+)").astype(int)
+    glcm = glcm.sort_values("window_size")
+
+    # --- Specdiv ---
+    sdiv = sep_df[sep_df["family"] == "sdiv"].copy()
+    sdiv["metric"] = sdiv["feature"].str.extract(r"sdiv_(alpha_local|beta_local)")
+    sdiv["plot_size"] = sdiv["feature"].str.extract(r"_plot_(\d+)").astype(int)
+    sdiv = sdiv.sort_values("plot_size")
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    # Consistent markers per metric
+    glcm_markers = {
+        "contrast": ("o", "#4C72B0"),
+        "energy": ("s", "#DD8452"),
+        "entropy": ("^", "#55A868"),
+        "homogeneity": ("D", "#C44E52"),
+    }
+    sdiv_markers = {
+        "alpha_local": ("o", "#4C72B0"),
+        "beta_local": ("s", "#DD8452"),
+    }
+
+    # Left panel — GLCM
+    ax = axes[0]
+    for metric, (marker, colour) in glcm_markers.items():
+        subset = glcm[glcm["metric"] == metric]
+        if subset.empty:
+            continue
+        ax.plot(subset["window_size"], subset["f_statistic"],
+                marker=marker, color=colour, linewidth=1.5,
+                markersize=6, label=metric, zorder=2)
+    ax.set_xlabel("Window size (pixels)", fontsize=11)
+    ax.set_ylabel("F-statistic (ANOVA)", fontsize=11)
+    ax.set_title(f"GLCM feature separation by window size (K={k})", fontsize=11)
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=9, title="GLCM metric", title_fontsize=9)
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+
+    # Right panel — Specdiv
+    ax2 = axes[1]
+    for metric, (marker, colour) in sdiv_markers.items():
+        subset = sdiv[sdiv["metric"] == metric]
+        if subset.empty:
+            continue
+        ax2.plot(subset["plot_size"], subset["f_statistic"],
+                 marker=marker, color=colour, linewidth=1.5,
+                 markersize=6, label=metric, zorder=2)
+    ax2.set_xlabel("Plot size (pixels)", fontsize=11)
+    ax2.set_ylabel("F-statistic (ANOVA)", fontsize=11)
+    ax2.set_title(f"Specdiv feature separation by plot size (K={k})", fontsize=11)
+    ax2.set_ylim(bottom=0)
+    ax2.legend(fontsize=9, title="Specdiv metric", title_fontsize=9)
+    ax2.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+
+    plt.suptitle(
+        f"Spatial feature separation by scale (K={k})\n"
+        f"Higher F-statistic = greater between-cluster vs within-cluster variance",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    out_path = output_dir / f"feature_separation_spatial_k{k}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"Spatial separation plot saved: {out_path}")

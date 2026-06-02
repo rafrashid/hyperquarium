@@ -49,11 +49,6 @@ class HACConfig:
     majority_vote_min_pixels: int = 10
 
     # ------------------------------------------------------------------
-    # Feature separation plot
-    # ------------------------------------------------------------------
-    n_top_separation_features: int = 20
-
-    # ------------------------------------------------------------------
     # Paths — derived at runtime in hac.py; do not set manually
     # ------------------------------------------------------------------
     xgb_shap_dir: Path = None

@@ -49,9 +49,10 @@ from hac_pipeline.utils.logger import setup_logger
 from hac_pipeline.visualisations.plots import (
     plot_cluster_accuracy,
     plot_dendrogram,
-    plot_feature_separation,
     plot_majority_vote_heatmap,
     plot_roi_assignment_summary,
+    plot_spectral_separation,
+    plot_spatial_separation,
 )
 
 logger = logging.getLogger(__name__)
@@ -272,13 +273,14 @@ def main() -> None:
                 output_dir=out,
             )
 
-        if should_run(out / f"feature_separation_k{k}.png", overwrite):
+        if should_run(out / f"feature_separation_spectral_k{k}.png", overwrite):
             sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")
-            plot_feature_separation(
-                sep_df=sep_df, k=k,
-                n_top=cfg.n_top_separation_features,
-                output_dir=out,
-            )
+            plot_spectral_separation(sep_df=sep_df, k=k, output_dir=out)
+
+        if should_run(out / f"feature_separation_spatial_k{k}.png", overwrite):
+            if not (out / f"feature_separation_k{k}.csv").exists():
+                sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")
+            plot_spatial_separation(sep_df=sep_df, k=k, output_dir=out)
 
     logger.info(f"=== HAC Pipeline complete — Spectra {args.spectra} ===")
 
