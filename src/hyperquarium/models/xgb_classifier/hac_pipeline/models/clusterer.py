@@ -69,8 +69,13 @@ def load_pca_from_checkpoint(output_dir: Path) -> tuple[np.ndarray, PCA]:
     return X_pca, pca
 
 
-def fit_ward_linkage(X_pca: np.ndarray, output_dir: Path) -> np.ndarray:
-    """Compute condensed distance matrix and Ward linkage. Saves linkage_matrix.npy."""
+def fit_linkage(X_pca: np.ndarray, output_dir: Path) -> np.ndarray:
+    """Compute condensed distance matrix and UPGMA (average) linkage.
+
+    Saves linkage_matrix.npy for reuse without recomputation.
+    UPGMA makes no assumption about cluster shape or size — appropriate
+    for assemblage discovery where cluster sizes and shapes are unknown.
+    """
     N = X_pca.shape[0]
     n_pairs = N * (N - 1) // 2
     mem_gb = n_pairs * 8 / 1e9  # float64
@@ -80,8 +85,8 @@ def fit_ward_linkage(X_pca: np.ndarray, output_dir: Path) -> np.ndarray:
     )
     dist_condensed = pdist(X_pca, metric="euclidean")
 
-    logger.info("Computing Ward linkage.")
-    Z = linkage(dist_condensed, method="ward")
+    logger.info("Computing UPGMA linkage (average).")
+    Z = linkage(dist_condensed, method="average")
     del dist_condensed
 
     np.save(output_dir / "linkage_matrix.npy", Z)

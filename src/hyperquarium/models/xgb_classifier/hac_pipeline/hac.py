@@ -1,12 +1,17 @@
 """
 hac.py — HAC pipeline entry point
 -----------------------------------
-Unsupervised Ward linkage clustering of turf_algae pixels.
+Unsupervised UPGMA (average linkage) clustering of turf_algae pixels.
 All valid feature columns used — no SHAP pre-selection.
 
 Usage:
     python3 hac.py <parquet_path> --spectra A --labelset pilot
     python3 hac.py <parquet_path> --spectra A --overwrite false
+    python3 hac.py <parquet_path> --spectra C --no-pca   # Spectrum C only
+
+--no_pca: skip PCA, cluster directly on StandardScaler-scaled features.
+          Only permitted with --spectra C. Fails loudly otherwise.
+          Outputs to outputs/hac/spectra_C_no_pca/ for clean separation.
 
 PBS array:
     #PBS -J 0-3
@@ -30,6 +35,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
 
 from hac_pipeline.config.config import HACConfig
 from hac_pipeline.data.loader import load_turf_sample
@@ -40,7 +46,7 @@ from hac_pipeline.evaluation.evaluator import (
 from hac_pipeline.models.clusterer import (
     assign_all_clusters,
     fit_pca,
-    fit_ward_linkage,
+    fit_linkage,
     load_pca_from_checkpoint,
     silhouette_sweep,
 )
@@ -78,58 +84,47 @@ def parse_args() -> argparse.Namespace:
         help="true (default): rerun all steps. "
              "false: skip steps whose output files already exist.",
     )
+    p.add_argument(
+        "--no-pca", dest="no_pca", action="store_true", default=False,
+        help="Skip PCA and cluster directly on scaled features. "
+             "Only permitted with --spectra C.",
+    )
     return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint helpers
+# Checkpoint helper
 # ---------------------------------------------------------------------------
 
 def should_run(output_path: Path, overwrite: bool) -> bool:
     if overwrite:
         return True
     if output_path.exists():
-        logger.info(f"Checkpoint: skipping (exists) — {output_path.name}")
+        logger.info(f"Checkpoint: skipping (exists) - {output_path.name}")
         return False
     return True
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Shared pipeline logic
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    args = parse_args()
-    overwrite = args.overwrite.lower() == "true"
+def run_pipeline(
+        args: argparse.Namespace,
+        cfg: HACConfig,
+        df_sample: pd.DataFrame,
+        feat_cols: list[str],
+        nan_fractions: dict,
+        out: Path,
+        overwrite: bool,
+        no_pca: bool,
+) -> None:
+    """Run Steps 3-7 given loaded and sampled data.
 
-    cfg = HACConfig()
-    cfg.xgb_shap_dir = args.xgb_output / f"spectra_{args.spectra}" / "level_4"
-    cfg.output_dir = args.hac_output / f"spectra_{args.spectra}"
-    cfg.held_out_summary_path = (
-            args.xgb_output / f"spectra_{args.spectra}" / "held_out_accuracy_summary.csv"
-    )
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    out = cfg.output_dir
-
-    setup_logger(out, spectra=args.spectra)
-    logger.info(f"=== HAC Pipeline — Spectra {args.spectra} ===")
-    logger.info(f"Parquet:   {args.parquet_path}")
-    logger.info(f"Output:    {out}")
-    logger.info(f"Overwrite: {overwrite}")
-
-    # ------------------------------------------------------------------
-    # Step 1 — Load, filter, clean, sample
-    # Always runs (fast; needed in-memory regardless of checkpoints)
-    # ------------------------------------------------------------------
-    logger.info("--- Step 1: Data loading ---")
-    df_sample, feat_cols, nan_fractions = load_turf_sample(
-        parquet_path=args.parquet_path,
-        mapping_path=args.mapping,
-        pixels_per_roi=cfg.pixels_per_roi,
-        random_seed=cfg.random_seed,
-        nan_col_threshold=cfg.nan_col_threshold,
-        labelset=args.labelset,
-    )
+    Called by main() for both the PCA and no-PCA branches.
+    X passed to fit_linkage is either PCA-reduced (default) or
+    StandardScaler-scaled raw features (--no_pca).
+    """
     roi_ids = df_sample["roi_ID"].reset_index(drop=True)
     n_rois = roi_ids.nunique()
 
@@ -137,6 +132,7 @@ def main() -> None:
     if should_run(out / "feature_columns.json", overwrite):
         feat_record = {
             "n_features": len(feat_cols),
+            "pca_applied": not no_pca,
             "features": [
                 {"name": f, "nan_fraction_before_drop": nan_fractions.get(f, 0.0)}
                 for f in feat_cols
@@ -145,29 +141,37 @@ def main() -> None:
         with open(out / "feature_columns.json", "w") as fh:
             json.dump(feat_record, fh, indent=2)
         logger.info(f"Feature columns saved: {out / 'feature_columns.json'} "
-                    f"({len(feat_cols)} features).")
+                    f"({len(feat_cols)} features, pca_applied={not no_pca}).")
 
     # ------------------------------------------------------------------
-    # Step 3 — PCA
+    # Step 3 — PCA (skipped in no_pca branch)
     # ------------------------------------------------------------------
-    logger.info("--- Step 3: PCA pre-reduction ---")
-    if should_run(out / "X_pca.npy", overwrite):
+    if no_pca:
+        logger.info("--- Step 3: PCA skipped (--no_pca) ---")
+        logger.info("Applying StandardScaler to raw features.")
         X_raw = df_sample[feat_cols].values
-        X_pca, pca, _ = fit_pca(
-            X=X_raw,
-            feature_cols=feat_cols,
-            variance_threshold=cfg.pca_variance_threshold,
-            output_dir=out,
-        )
+        scaler = StandardScaler()
+        X_input = scaler.fit_transform(X_raw)
+        logger.info(f"Scaled feature matrix: shape {X_input.shape}.")
     else:
-        X_pca, pca = load_pca_from_checkpoint(out)
+        logger.info("--- Step 3: PCA pre-reduction ---")
+        if should_run(out / "X_pca.npy", overwrite):
+            X_raw = df_sample[feat_cols].values
+            X_input, pca, _ = fit_pca(
+                X=X_raw,
+                feature_cols=feat_cols,
+                variance_threshold=cfg.pca_variance_threshold,
+                output_dir=out,
+            )
+        else:
+            X_input, pca = load_pca_from_checkpoint(out)
 
     # ------------------------------------------------------------------
-    # Step 4 — Ward linkage
+    # Step 4 — UPGMA linkage
     # ------------------------------------------------------------------
-    logger.info("--- Step 4: Ward linkage ---")
+    logger.info("--- Step 4: UPGMA linkage ---")
     if should_run(out / "linkage_matrix.npy", overwrite):
-        Z = fit_ward_linkage(X_pca=X_pca, output_dir=out)
+        Z = fit_linkage(X_pca=X_input, output_dir=out)
     else:
         Z = np.load(out / "linkage_matrix.npy")
         logger.info(f"Loaded linkage matrix from checkpoint: shape {Z.shape}.")
@@ -178,7 +182,7 @@ def main() -> None:
     logger.info("--- Step 5: Silhouette sweep and cluster assignment ---")
     if should_run(out / "silhouette_scores.json", overwrite):
         best_k = silhouette_sweep(
-            X_pca=X_pca, Z=Z,
+            X_pca=X_input, Z=Z,
             k_min=cfg.silhouette_k_min,
             k_max=cfg.silhouette_k_max,
             output_dir=out,
@@ -187,7 +191,7 @@ def main() -> None:
         best_k = load_json(out / "silhouette_scores.json")["best_k"]
         logger.info(f"Loaded silhouette scores from checkpoint. best_k={best_k}.")
 
-    k_rois = n_rois  # K matching number of unique ROIs
+    k_rois = n_rois
     k_values = sorted(set(cfg.k_values + [best_k, k_rois]))
     logger.info(f"K values: {k_values} (best_k={best_k}, k_rois={k_rois})")
 
@@ -230,7 +234,6 @@ def main() -> None:
                 df_sample=df_sample,
                 feature_cols=feat_cols,
                 pixel_df=pixel_df,
-                pca=pca,
                 k=k,
                 n_top=20,
                 output_dir=out,
@@ -242,7 +245,6 @@ def main() -> None:
     # ------------------------------------------------------------------
     logger.info("--- Step 7: Visualisations ---")
 
-    # 7a — Dendrogram (K-independent)
     if should_run(out / "dendrogram.png", overwrite):
         plot_dendrogram(
             Z=Z,
@@ -251,7 +253,6 @@ def main() -> None:
             output_dir=out,
         )
 
-    # Per-K figures
     for k in k_values:
         logger.info(f"  Visualisations for K={k}...")
 
@@ -264,7 +265,6 @@ def main() -> None:
         if should_run(out / f"majority_vote_heatmap_k{k}.png", overwrite):
             plot_majority_vote_heatmap(pixel_df=pixel_df, k=k, output_dir=out)
 
-        # Summary histogram for all K values
         if should_run(out / f"roi_assignment_summary_k{k}.png", overwrite):
             metrics = load_json(out / f"metrics_k{k}.json")
             plot_roi_assignment_summary(
@@ -279,11 +279,9 @@ def main() -> None:
             plot_spectral_separation(sep_df=sep_df, k=k, output_dir=out)
 
         if should_run(out / f"feature_separation_spatial_k{k}.png", overwrite):
-            if not (out / f"feature_separation_k{k}.csv").exists():
-                sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")
+            sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")
             plot_spatial_separation(sep_df=sep_df, k=k, output_dir=out)
 
-    # Combined metrics table across all K values (one PNG + one CSV)
     if should_run(out / "roi_metrics_combined.png", overwrite):
         metrics_by_k = {k: load_json(out / f"metrics_k{k}.json") for k in k_values}
         plot_roi_metrics_combined(
@@ -293,7 +291,73 @@ def main() -> None:
             output_dir=out,
         )
 
-    logger.info(f"=== HAC Pipeline complete --- Spectra {args.spectra} ===")
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    args = parse_args()
+    overwrite = args.overwrite.lower() == "true"
+    no_pca = args.no_pca
+
+    # Guard: --no_pca only permitted with --spectra C
+    if no_pca and args.spectra != "C":
+        raise ValueError(
+            f"--no_pca is only permitted with --spectra C (got --spectra {args.spectra}). "
+            f"The no-PCA branch is specific to L2-normalised spectra (Spectrum C) "
+            f"to align with the spectranomic literature. "
+            f"Re-run with --spectra C or remove --no_pca."
+        )
+
+    cfg = HACConfig()
+    cfg.xgb_shap_dir = args.xgb_output / f"spectra_{args.spectra}" / "level_4"
+    cfg.held_out_summary_path = (
+            args.xgb_output / f"spectra_{args.spectra}" / "held_out_accuracy_summary.csv"
+    )
+
+    # Output directory: separate subdirectory for no-PCA branch
+    if no_pca:
+        cfg.output_dir = args.hac_output / "spectra_C_no_pca"
+    else:
+        cfg.output_dir = args.hac_output / f"spectra_{args.spectra}"
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    out = cfg.output_dir
+
+    setup_logger(out, spectra=f"{args.spectra}{'_no_pca' if no_pca else ''}")
+    logger.info(f"=== HAC Pipeline --- Spectra {args.spectra}"
+                f"{' (no PCA)' if no_pca else ''} ===")
+    logger.info(f"Parquet:   {args.parquet_path}")
+    logger.info(f"Output:    {out}")
+    logger.info(f"Overwrite: {overwrite}")
+    logger.info(f"PCA:       {'disabled' if no_pca else 'enabled'}")
+
+    # ------------------------------------------------------------------
+    # Step 1 — Load, filter, clean, sample (shared by both branches)
+    # ------------------------------------------------------------------
+    logger.info("--- Step 1: Data loading ---")
+    df_sample, feat_cols, nan_fractions = load_turf_sample(
+        parquet_path=args.parquet_path,
+        mapping_path=args.mapping,
+        pixels_per_roi=cfg.pixels_per_roi,
+        random_seed=cfg.random_seed,
+        nan_col_threshold=cfg.nan_col_threshold,
+        labelset=args.labelset,
+    )
+
+    run_pipeline(
+        args=args,
+        cfg=cfg,
+        df_sample=df_sample,
+        feat_cols=feat_cols,
+        nan_fractions=nan_fractions,
+        out=out,
+        overwrite=overwrite,
+        no_pca=no_pca,
+    )
+
+    logger.info(f"=== HAC Pipeline complete --- Spectra {args.spectra}"
+                f"{' (no PCA)' if no_pca else ''} ===")
 
 
 if __name__ == "__main__":
