@@ -51,6 +51,7 @@ from hac_pipeline.visualisations.plots import (
     plot_dendrogram,
     plot_majority_vote_heatmap,
     plot_roi_assignment_summary,
+    plot_roi_metrics_combined,
     plot_spectral_separation,
     plot_spatial_separation,
 )
@@ -231,7 +232,7 @@ def main() -> None:
                 pixel_df=pixel_df,
                 pca=pca,
                 k=k,
-                n_top=cfg.n_top_separation_features,
+                n_top=20,
                 output_dir=out,
                 xgb_shap_dir=cfg.xgb_shap_dir,
             )
@@ -263,8 +264,8 @@ def main() -> None:
         if should_run(out / f"majority_vote_heatmap_k{k}.png", overwrite):
             plot_majority_vote_heatmap(pixel_df=pixel_df, k=k, output_dir=out)
 
-        # Summary histogram + metrics table — only at K=n_rois
-        if k == k_rois and should_run(out / f"roi_assignment_summary_k{k}.png", overwrite):
+        # Summary histogram for all K values
+        if should_run(out / f"roi_assignment_summary_k{k}.png", overwrite):
             metrics = load_json(out / f"metrics_k{k}.json")
             plot_roi_assignment_summary(
                 roi_clusters=roi_clusters,
@@ -282,7 +283,17 @@ def main() -> None:
                 sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")
             plot_spatial_separation(sep_df=sep_df, k=k, output_dir=out)
 
-    logger.info(f"=== HAC Pipeline complete — Spectra {args.spectra} ===")
+    # Combined metrics table across all K values (one PNG + one CSV)
+    if should_run(out / "roi_metrics_combined.png", overwrite):
+        metrics_by_k = {k: load_json(out / f"metrics_k{k}.json") for k in k_values}
+        plot_roi_metrics_combined(
+            roi_clusters=roi_clusters,
+            k_values=k_values,
+            metrics_by_k=metrics_by_k,
+            output_dir=out,
+        )
+
+    logger.info(f"=== HAC Pipeline complete --- Spectra {args.spectra} ===")
 
 
 if __name__ == "__main__":

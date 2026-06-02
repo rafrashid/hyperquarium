@@ -16,7 +16,10 @@ import pandas as pd
 from hac_pipeline.utils.io import classify_feature_family
 from scipy.stats import f_oneway
 from sklearn.metrics import (
+    adjusted_mutual_info_score,
     adjusted_rand_score,
+    completeness_score,
+    homogeneity_score,
     normalized_mutual_info_score,
     v_measure_score,
 )
@@ -69,7 +72,10 @@ def compute_validation_metrics(
     roi_pred = roi_df["cluster_label"].values
 
     ari = adjusted_rand_score(roi_true, roi_pred)
+    ami = adjusted_mutual_info_score(roi_true, roi_pred)
     nmi = normalized_mutual_info_score(roi_true, roi_pred)
+    hom = homogeneity_score(roi_true, roi_pred)
+    com = completeness_score(roi_true, roi_pred)
     v = v_measure_score(roi_true, roi_pred)
     sil = silhouette_scores.get(k)
 
@@ -77,7 +83,10 @@ def compute_validation_metrics(
         "k": k,
         "n_rois": len(roi_df),
         "ari": round(ari, 4),
+        "ami": round(ami, 4),
         "nmi": round(nmi, 4),
+        "homogeneity": round(hom, 4),
+        "completeness": round(com, 4),
         "v_measure": round(v, 4),
         "silhouette": round(sil, 4) if sil is not None else None,
         "roi_majority_vote": roi_df.to_dict(orient="records"),
@@ -86,7 +95,8 @@ def compute_validation_metrics(
     with open(output_dir / f"metrics_k{k}.json", "w") as f:
         json.dump(metrics, f, indent=2)
     logger.info(
-        f"K={k}: ARI={ari:.4f}, NMI={nmi:.4f}, V={v:.4f}, "
+        f"K={k}: ARI={ari:.4f}, AMI={ami:.4f}, NMI={nmi:.4f}, "
+        f"Hom={hom:.4f}, Com={com:.4f}, V={v:.4f}, "
         f"sil={f'{sil:.4f}' if sil is not None else 'N/A'}. "
         f"Saved: metrics_k{k}.json"
     )
@@ -124,13 +134,12 @@ def compute_feature_separation(
         df_sample: pd.DataFrame,
         feature_cols: list[str],
         pixel_df: pd.DataFrame,
-        pca: object,
         k: int,
         n_top: int,
         output_dir: Path,
         xgb_shap_dir: Path = None,
 ) -> pd.DataFrame:
-    """ANOVA F-statistic + variance-weighted PCA loading per feature.
+    """ANOVA F-statistic per feature, sorted by f_rank.
 
     Parameters
     ----------
@@ -140,12 +149,10 @@ def compute_feature_separation(
         All feature columns used in clustering.
     pixel_df : pd.DataFrame
         Long-format pixel cluster assignments.
-    pca : sklearn PCA
-        Fitted PCA from Step 3.
     k : int
         K value for cluster labels.
     n_top : int
-        Number of top features shown in dot plot.
+        Number of top features shown in dot plot (unused here, kept for signature compat).
     output_dir : Path
     xgb_shap_dir : Path, optional
         If provided, cross-reference SHAP rankings as a post-hoc column.
@@ -182,23 +189,19 @@ def compute_feature_separation(
         (loadings ** 2 * ev_ratio[:, np.newaxis]).sum(axis=0)
     )
 
-    # Assemble
+    # Assemble — F-statistic only, no PCA loading rank
     records = []
-    for i, feat in enumerate(feature_cols):
+    for feat in feature_cols:
         records.append({
             "feature": feat,
             "family": classify_feature_family(feat),
             "f_statistic": f_stats.get(feat, np.nan),
             "p_value": p_values.get(feat, np.nan),
-            "weighted_loading": float(weighted_loadings[i]),
         })
 
     sep_df = pd.DataFrame(records)
     sep_df["f_rank"] = sep_df["f_statistic"].rank(
         ascending=False, method="min", na_option="bottom").astype(int)
-    sep_df["loading_rank"] = sep_df["weighted_loading"].rank(
-        ascending=False, method="min").astype(int)
-    sep_df["combined_rank"] = ((sep_df["f_rank"] + sep_df["loading_rank"]) / 2).round(1)
 
     # Optional post-hoc SHAP cross-reference
     if xgb_shap_dir is not None:
@@ -218,12 +221,12 @@ def compute_feature_separation(
         else:
             logger.warning(f"SHAP file not found at {shap_path}; skipping cross-reference.")
 
-    sep_df = sep_df.sort_values("combined_rank").reset_index(drop=True)
+    sep_df = sep_df.sort_values("f_rank").reset_index(drop=True)
     out_path = output_dir / f"feature_separation_k{k}.csv"
     sep_df.to_csv(out_path, index=False)
     logger.info(
         f"Feature separation saved: {out_path}. "
         f"Top feature: {sep_df.iloc[0]['feature']} "
-        f"(combined_rank={sep_df.iloc[0]['combined_rank']})."
+        f"(f_rank=1, f_statistic={sep_df.iloc[0]['f_statistic']:.1f})."
     )
     return sep_df
