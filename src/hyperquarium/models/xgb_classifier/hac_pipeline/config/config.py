@@ -36,7 +36,7 @@ class HACConfig:
     # ------------------------------------------------------------------
     # Clustering
     # ------------------------------------------------------------------
-    k_values: list = field(default_factory=lambda: [2, 5, 10, 20])
+    k_values: list = field(default_factory=lambda: [2, 3, 4, 5, 10])
     """Fixed K values to evaluate. k_rois (N unique ROIs) and silhouette-best
     K are added automatically at runtime."""
 
@@ -52,11 +52,6 @@ class HACConfig:
     # Feature separation plot
     # ------------------------------------------------------------------
     n_top_separation_features: int = 20
-
-    # ------------------------------------------------------------------
-    # Dendrogram annotation
-    # ------------------------------------------------------------------
-    poor_roi_prop_correct_threshold: float = 0.5
 
     # ------------------------------------------------------------------
     # Paths — derived at runtime in hac.py; do not set manually

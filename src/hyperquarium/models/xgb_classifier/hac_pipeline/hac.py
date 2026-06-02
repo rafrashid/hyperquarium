@@ -51,7 +51,7 @@ from hac_pipeline.visualisations.plots import (
     plot_dendrogram,
     plot_feature_separation,
     plot_majority_vote_heatmap,
-    plot_umap,
+    plot_roi_assignment_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,26 +240,11 @@ def main() -> None:
     # ------------------------------------------------------------------
     logger.info("--- Step 7: Visualisations ---")
 
-    # Load poor ROIs for dendrogram annotation
-    poor_rois: set[str] = set()
-    if cfg.held_out_summary_path.exists():
-        held_out = pd.read_csv(cfg.held_out_summary_path)
-        poor_rois = set(
-            held_out[held_out["prop_correct"] < cfg.poor_roi_prop_correct_threshold
-                     ]["roi_ID"]
-        )
-        logger.info(f"Poor ROIs (prop_correct < "
-                    f"{cfg.poor_roi_prop_correct_threshold}): {len(poor_rois)}.")
-    else:
-        logger.warning("held_out_accuracy_summary.csv not found; "
-                       "dendrogram will not annotate poor ROIs.")
-
     # 7a — Dendrogram (K-independent)
     if should_run(out / "dendrogram.png", overwrite):
         plot_dendrogram(
             Z=Z,
             roi_ids=roi_ids.unique().tolist(),
-            poor_rois=poor_rois,
             k_values=k_values,
             output_dir=out,
         )
@@ -268,11 +253,6 @@ def main() -> None:
     for k in k_values:
         logger.info(f"  Visualisations for K={k}...")
 
-        if should_run(out / f"umap_k{k}.png", overwrite):
-            plot_umap(
-                X_pca=X_pca, roi_ids=roi_ids, pixel_df=pixel_df,
-                k=k, output_dir=out,
-            )
         if should_run(out / f"cluster_accuracy_k{k}.png", overwrite):
             plot_cluster_accuracy(
                 roi_clusters=roi_clusters,
@@ -281,6 +261,16 @@ def main() -> None:
             )
         if should_run(out / f"majority_vote_heatmap_k{k}.png", overwrite):
             plot_majority_vote_heatmap(pixel_df=pixel_df, k=k, output_dir=out)
+
+        # Summary histogram + metrics table — only at K=n_rois
+        if k == k_rois and should_run(out / f"roi_assignment_summary_k{k}.png", overwrite):
+            metrics = load_json(out / f"metrics_k{k}.json")
+            plot_roi_assignment_summary(
+                roi_clusters=roi_clusters,
+                k=k,
+                metrics=metrics,
+                output_dir=out,
+            )
 
         if should_run(out / f"feature_separation_k{k}.png", overwrite):
             sep_df = pd.read_csv(out / f"feature_separation_k{k}.csv")

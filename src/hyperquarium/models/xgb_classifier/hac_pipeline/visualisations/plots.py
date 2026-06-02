@@ -23,7 +23,6 @@ FAMILY_COLOURS = {
     "sdiv": "#55A868",
     "unknown": "#8C8C8C",
 }
-POOR_ROI_COLOUR = "#D62728"
 DEFAULT_LEAF_COLOUR = "#333333"
 
 
@@ -34,7 +33,6 @@ DEFAULT_LEAF_COLOUR = "#333333"
 def plot_dendrogram(
         Z: np.ndarray,
         roi_ids: list[str],
-        poor_rois: set[str],
         k_values: list[int],
         output_dir: Path,
 ) -> None:
@@ -52,15 +50,7 @@ def plot_dendrogram(
         above_threshold_color=DEFAULT_LEAF_COLOUR,
     )
 
-    # Annotate leaves: scipy uses integer leaf labels with lastp truncation.
-    # Re-label x-ticks with roi_ids in dendrogram order.
     ax.set_xticklabels(roi_ids, rotation=90, fontsize=5)
-
-    # Colour poor ROI labels
-    for lbl in ax.get_xticklabels():
-        if lbl.get_text() in poor_rois:
-            lbl.set_color(POOR_ROI_COLOUR)
-            lbl.set_fontweight("bold")
 
     _draw_k_cutlines(ax, Z, k_values, n_rois)
 
@@ -70,12 +60,9 @@ def plot_dendrogram(
 
     from matplotlib.lines import Line2D
     legend_elements = [
-                          Line2D([0], [0], color=POOR_ROI_COLOUR, linewidth=2,
-                                 label=f"Consistently misclassified ROIs (n={len(poor_rois)})"),
-                      ] + [
-                          Line2D([0], [0], color="grey", linestyle="--", linewidth=1, label=f"K={k} cut")
-                          for k in sorted(k_values)
-                      ]
+        Line2D([0], [0], color="grey", linestyle="--", linewidth=1, label=f"K={k} cut")
+        for k in sorted(k_values)
+    ]
     ax.legend(handles=legend_elements, fontsize=8, loc="upper right")
 
     plt.tight_layout()
@@ -188,8 +175,78 @@ def plot_cluster_accuracy(
 
 
 # ---------------------------------------------------------------------------
-# 7d — Majority vote heatmap
+# 7d_summary — ROI assignment confidence summary (for k=n_rois)
 # ---------------------------------------------------------------------------
+
+def plot_roi_assignment_summary(
+        roi_clusters: pd.DataFrame,
+        k: int,
+        metrics: dict,
+        output_dir: Path,
+) -> None:
+    """Histogram of pct_majority + summary metrics table for K=n_rois.
+
+    Produced in addition to the heatmap at K=n_rois for publication use.
+    Directly comparable across spectra types.
+    """
+    df_k = roi_clusters[roi_clusters["k"] == k].copy()
+    pct = df_k["pct_majority"].values
+
+    fig, axes = plt.subplots(
+        1, 2, figsize=(14, 5),
+        gridspec_kw={"width_ratios": [2, 1]},
+    )
+
+    # Left panel — histogram
+    ax = axes[0]
+    ax.hist(pct, bins=20, range=(0, 100), color="#4C72B0", edgecolor="white",
+            linewidth=0.5, alpha=0.85)
+    ax.axvline(x=float(np.median(pct)), color="black", linestyle="--",
+               linewidth=1.2, label=f"Median: {np.median(pct):.1f}%")
+    ax.axvline(x=80, color="grey", linestyle=":", linewidth=1.0,
+               label="80% threshold")
+    ax.set_xlabel("% pixels assigned to majority cluster", fontsize=11)
+    ax.set_ylabel("Number of ROIs", fontsize=11)
+    ax.set_xlim(0, 100)
+    ax.set_title(f"ROI assignment confidence (K={k})", fontsize=11)
+    ax.legend(fontsize=9)
+
+    # Right panel — summary metrics table
+    ax2 = axes[1]
+    ax2.axis("off")
+    pct_above_80 = float((pct >= 80).mean() * 100)
+    pct_above_50 = float((pct >= 50).mean() * 100)
+    table_data = [
+        ["N ROIs", str(len(df_k))],
+        ["Median pct_majority", f"{np.median(pct):.1f}%"],
+        ["Mean pct_majority", f"{np.mean(pct):.1f}%"],
+        ["ROIs >= 80%", f"{pct_above_80:.1f}%"],
+        ["ROIs >= 50%", f"{pct_above_50:.1f}%"],
+        ["ARI", str(metrics.get("ari", "N/A"))],
+        ["NMI", str(metrics.get("nmi", "N/A"))],
+        ["V-measure", str(metrics.get("v_measure", "N/A"))],
+    ]
+    tbl = ax2.table(
+        cellText=table_data,
+        colLabels=["Metric", "Value"],
+        cellLoc="left",
+        loc="center",
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10)
+    tbl.scale(1.2, 1.6)
+    ax2.set_title("Summary metrics", fontsize=11)
+
+    plt.suptitle(
+        f"HAC assignment confidence — K={k} (one cluster per ROI)",
+        fontsize=11, y=1.01,
+    )
+    plt.tight_layout()
+    out_path = output_dir / f"roi_assignment_summary_k{k}.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"ROI assignment summary saved: {out_path}")
+
 
 def plot_majority_vote_heatmap(
         pixel_df: pd.DataFrame,
@@ -200,7 +257,17 @@ def plot_majority_vote_heatmap(
     counts = (df_k.groupby(["roi_ID", "cluster_label"])
               .size().unstack(fill_value=0))
     pct = counts.div(counts.sum(axis=1), axis=0) * 100
-    pct = pct.loc[pct.idxmax(axis=1).sort_values().index]
+
+    # Sort rows by majority cluster first, then by pct_majority descending
+    # within each cluster — confident ROIs appear at top of each block
+    majority_cluster = pct.idxmax(axis=1)
+    pct_majority = pct.max(axis=1)
+    sort_index = (pd.DataFrame({"majority_cluster": majority_cluster,
+                                "pct_majority": pct_majority})
+                  .sort_values(["majority_cluster", "pct_majority"],
+                               ascending=[True, False])
+                  .index)
+    pct = pct.loc[sort_index]
 
     fig, ax = plt.subplots(figsize=(max(8, k * 1.0), max(10, len(pct) * 0.18)))
     im = ax.imshow(pct.values, aspect="auto", cmap="Blues", vmin=0, vmax=100)
