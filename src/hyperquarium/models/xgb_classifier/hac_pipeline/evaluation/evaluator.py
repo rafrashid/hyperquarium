@@ -182,13 +182,6 @@ def compute_feature_separation(
             f_stats[feat] = float(f_val)
             p_values[feat] = float(p_val)
 
-    # Measure 2: Variance-weighted PCA loading magnitude
-    ev_ratio = pca.explained_variance_ratio_  # (n_components,)
-    loadings = pca.components_  # (n_components, n_features)
-    weighted_loadings = np.sqrt(
-        (loadings ** 2 * ev_ratio[:, np.newaxis]).sum(axis=0)
-    )
-
     # Assemble — F-statistic only, no PCA loading rank
     records = []
     for feat in feature_cols:
