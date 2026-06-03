@@ -135,16 +135,27 @@ def shap_feature_importance(
         DataFrame with mean |SHAP| columns: global + per class.
     """
     class_names = list(le.classes_)
-    importance = pd.DataFrame(index=feature_names)
 
     if n_classes == 2:
-        importance["mean_abs_shap_global"] = np.abs(shap_vals).mean(axis=0)
-        importance["mean_abs_shap_turf"] = np.abs(shap_vals).mean(axis=0)
+        global_mean = np.abs(shap_vals).mean(axis=0)
+        importance = pd.DataFrame(
+            {
+                "mean_abs_shap_global": global_mean,
+                "mean_abs_shap_turf": global_mean,
+            },
+            index=feature_names,
+        )
     else:
-        importance["mean_abs_shap_global"] = np.abs(shap_vals).mean(axis=(0, 1))
+        # Build all columns in one shot to avoid DataFrame fragmentation.
+        # Inserting columns one-by-one in a loop triggers PerformanceWarning
+        # and inflates peak memory (each insert may copy backing arrays).
+        cols: dict[str, np.ndarray] = {
+            "mean_abs_shap_global": np.abs(shap_vals).mean(axis=(0, 1)),
+        }
         for i, cls_name in enumerate(class_names):
             col = f"mean_abs_shap_{cls_name.replace(' ', '_')}"
-            importance[col] = np.abs(shap_vals[:, i, :]).mean(axis=0)
+            cols[col] = np.abs(shap_vals[:, i, :]).mean(axis=0)
+        importance = pd.DataFrame(cols, index=feature_names)
 
     importance = importance.sort_values("mean_abs_shap_global", ascending=False)
 
