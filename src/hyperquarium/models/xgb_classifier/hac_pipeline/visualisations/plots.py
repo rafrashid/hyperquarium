@@ -97,17 +97,16 @@ def plot_umap(
         k: int,
         output_dir: Path,
         umap_random_state: int = 42,
-        umap_n_jobs: int = 4,
 ) -> None:
     try:
-        import umap
+        from umap import UMAP
     except ImportError:
         logger.warning("umap-learn not installed; skipping UMAP plots.")
         return
 
     logger.info(f"Fitting UMAP (K={k}).")
-    reducer = umap.UMAP(n_components=2, random_state=umap_random_state,
-                        n_jobs=umap_n_jobs)
+    reducer = UMAP(n_components=2, random_state=umap_random_state,
+                   n_jobs=1)
     embedding = reducer.fit_transform(X_pca)
 
     from sklearn.preprocessing import LabelEncoder

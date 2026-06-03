@@ -147,12 +147,15 @@ def run_pipeline(
     # Step 3 — PCA (skipped in no_pca branch)
     # ------------------------------------------------------------------
     if no_pca:
-        logger.info("--- Step 3: PCA skipped (--no_pca) ---")
+        logger.info("--- Step 3: PCA skipped (--no-pca) ---")
         logger.info("Applying StandardScaler to raw features.")
         X_raw = df_sample[feat_cols].values
         scaler = StandardScaler()
         X_input = scaler.fit_transform(X_raw)
-        logger.info(f"Scaled feature matrix: shape {X_input.shape}.")
+        if should_run(out / "X_pca.npy", overwrite):
+            np.save(out / "X_pca.npy", X_input.astype(np.float32))
+            logger.info(f"Scaled feature matrix saved: {out / 'X_pca.npy'} "
+                        f"(shape {X_input.shape}, no PCA applied).")
     else:
         logger.info("--- Step 3: PCA pre-reduction ---")
         if should_run(out / "X_pca.npy", overwrite):
