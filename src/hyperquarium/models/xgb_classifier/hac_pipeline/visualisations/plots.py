@@ -25,7 +25,6 @@ FAMILY_COLOURS = {
 }
 DEFAULT_LEAF_COLOUR = "#333333"
 
-
 # ---------------------------------------------------------------------------
 # 7a — Dendrogram
 # ---------------------------------------------------------------------------
@@ -54,7 +53,7 @@ def plot_dendrogram(
 
     _draw_k_cutlines(ax, Z, k_values, n_rois)
 
-    ax.set_title("Ward Linkage Dendrogram — Turf Algae ROIs", fontsize=13)
+    ax.set_title("UPGMA Dendrogram: Turf Algae ROIs", fontsize=13)
     ax.set_xlabel("ROI ID", fontsize=10)
     ax.set_ylabel("Linkage distance", fontsize=10)
 
