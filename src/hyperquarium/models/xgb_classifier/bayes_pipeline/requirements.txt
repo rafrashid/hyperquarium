@@ -1,0 +1,11 @@
+# Bayesian ROI-level feature analysis — dedicated venv (Python 3.12).
+# Keep separate from the xgb_pipeline environment.
+numpy
+scipy
+pandas
+pyarrow
+matplotlib
+pymc
+bambi
+arviz
+nutpie        # non-blocking: PyMC default NUTS works if no wheel is available
