@@ -109,6 +109,10 @@ class LabelConfig:
     # Mapping CSV column names.
     mapping_raw_col: str = "Level_0"
     level_col_fmt: str = "Level_{level}"  # Level_1, Level_2, Level_3
+    # Labelset selection — mirrors train.py's --labelset / LABEL_MAPPING_DATASET.
+    # labelset_mapping.csv has a `labelset` column; remap_labels filters to one.
+    labelset: str = "reefcompare"  # default matches train.py
+    labelset_col: str = "labelset"
 
 
 # --------------------------------------------------------------------------- #

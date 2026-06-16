@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--feature", required=True)
     ap.add_argument("--level", type=int, required=True)
     ap.add_argument("--output", type=Path, default=Path("outputs/bayes"))
+    ap.add_argument("--labelset", type=str, default="reefcompare",
+                    help="Labelset to filter labelset_mapping.csv (default: reefcompare)")
     ap.add_argument("--no-save", action="store_true")
     ap.add_argument("--prior-check", action="store_true",
                     help="Run prior-predictive gate and report the implied range.")
@@ -34,9 +36,10 @@ def main():
 
     cfg = CONFIG
     cfg.paths.output_root = args.output
+    cfg.labels.labelset = args.labelset
     logger = get_logger()
 
-    summary = load_or_build_summary(cfg, logger=logger)
+    summary = load_or_build_summary(cfg, dataset=args.labelset, logger=logger)
 
     if args.prior_check:
         cell = prepare_cell(summary, args.feature, args.level, cfg)

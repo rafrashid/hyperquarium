@@ -22,8 +22,10 @@ source /path/to/bayes_venv/bin/activate
 DATASET_PARQUET="data/compiled_dataset.parquet"
 MAPPING="data/labelset_mapping.csv"
 OUTPUT="outputs/bayes"
+LABELSET="reefcompare"        # or "pilot" — selects rows in labelset_mapping.csv
 
 python scripts/aggregate.py \
     --parquet "${DATASET_PARQUET}" \
     --mapping "${MAPPING}" \
-    --output  "${OUTPUT}"
+    --output  "${OUTPUT}" \
+    --labelset "${LABELSET}"

@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from bayes_pipeline.config.config import Config
-from bayes_pipeline.data.labels import load_mapping, remap_labels
+from bayes_pipeline.data.labels import remap_labels
 from bayes_pipeline.utils.io import save_parquet
 from bayes_pipeline.utils.logger import get_logger
 
@@ -41,13 +41,17 @@ def _resolve_feature_columns(df: pd.DataFrame, cfg: Config, logger) -> dict[str,
     return present
 
 
-def aggregate_to_roi(cfg: Config, logger=None) -> pd.DataFrame:
+def aggregate_to_roi(cfg: Config, dataset: str | None = None, logger=None) -> pd.DataFrame:
     """
     Run the full aggregation and cache to cfg.paths.roi_summary.
     Returns the ROI-level summary DataFrame.
+
+    `dataset` selects the labelset (defaults to cfg.labels.labelset), mirroring
+    train.py's --labelset. labelset_mapping.csv is filtered to this labelset.
     """
     logger = logger or get_logger()
     paths, labels = cfg.paths, cfg.labels
+    dataset = dataset if dataset is not None else labels.labelset
 
     logger.info("Loading compiled parquet: %s", paths.compiled_parquet)
     feat_cols_wanted = list(cfg.features.feature_columns().values())
@@ -57,9 +61,9 @@ def aggregate_to_roi(cfg: Config, logger=None) -> pd.DataFrame:
     df = pd.read_parquet(paths.compiled_parquet, columns=cols_to_read, engine="pyarrow")
     logger.info("Loaded %d pixel rows.", len(df))
 
-    logger.info("Applying labelset mapping: %s", paths.labelset_mapping)
-    mapping = load_mapping(paths.labelset_mapping, labels)
-    df = remap_labels(df, mapping, labels)
+    logger.info("Applying labelset mapping (labelset=%s): %s",
+                dataset, paths.labelset_mapping)
+    df = remap_labels(df, labels, paths.labelset_mapping, dataset=dataset)
     logger.info("After inclusion filter: %d rows, %d ROIs.",
                 len(df), df["roi_ID"].nunique())
 
@@ -91,10 +95,11 @@ def aggregate_to_roi(cfg: Config, logger=None) -> pd.DataFrame:
     return summary
 
 
-def load_or_build_summary(cfg: Config, force: bool = False, logger=None) -> pd.DataFrame:
-    """Load cached roi_summary.parquet if present, else build it."""
+def load_or_build_summary(cfg: Config, dataset: str | None = None,
+                          force: bool = False, logger=None) -> pd.DataFrame:
+    """Load cached roi_summary.parquet if present, else build it (for `dataset`)."""
     logger = logger or get_logger()
     if cfg.paths.roi_summary.exists() and not force:
         logger.info("Loading cached ROI summary: %s", cfg.paths.roi_summary)
         return pd.read_parquet(cfg.paths.roi_summary, engine="pyarrow")
-    return aggregate_to_roi(cfg, logger=logger)
+    return aggregate_to_roi(cfg, dataset=dataset, logger=logger)

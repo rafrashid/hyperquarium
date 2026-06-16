@@ -47,17 +47,19 @@ One dataset per invocation (pilot and reefcompare run separately).
 ```bash
 # 1. Aggregate (big-RAM; once per dataset). Submit pbs_aggregate.sh or run directly:
 python scripts/aggregate.py --parquet data/compiled_dataset.parquet \
-    --mapping data/labelset_mapping.csv --output outputs/bayes
+    --mapping data/labelset_mapping.csv --output outputs/bayes --labelset reefcompare
 
 # 2. Prototype ONE cell first (prove the workflow):
 python scripts/fit_one.py --feature homogeneity --level 2 \
-    --output outputs/bayes --prior-check
+    --output outputs/bayes --labelset reefcompare --prior-check
 
 # 3. Run all 21 cells:
 python scripts/run_all.py --parquet data/compiled_dataset.parquet \
-    --mapping data/labelset_mapping.csv --output outputs/bayes
+    --mapping data/labelset_mapping.csv --output outputs/bayes --labelset reefcompare
 ```
 
+`--labelset` filters `labelset_mapping.csv` (default `reefcompare`; use `pilot` for the
+pilot dataset) — same convention as `train.py`/`evaluate.py`/`predict.py`.
 Set `--glcm-window` / `--specdiv-plot` to choose the representative size (default 25).
 
 ## Layout

@@ -61,13 +61,16 @@ def run_one_cell(summary: pd.DataFrame, feature: str, level: int,
     return {"cell": cell, "idata": idata, "tables": tables, "diagnostics": diag}
 
 
-def run_all(cfg: Config = CONFIG, force_aggregate: bool = False, logger=None) -> None:
-    """Run all 21 cells for the currently configured dataset."""
+def run_all(cfg: Config = CONFIG, dataset: str | None = None,
+            force_aggregate: bool = False, logger=None) -> None:
+    """Run all 21 cells for the currently configured dataset/labelset."""
     logger = logger or get_logger(logfile=cfg.paths.output_root / "run.log")
+    dataset = dataset if dataset is not None else cfg.labels.labelset
     logger.info("=== Bayesian ROI feature analysis: full run ===")
-    logger.info("Output root: %s", cfg.paths.output_root)
+    logger.info("Output root: %s | labelset: %s", cfg.paths.output_root, dataset)
 
-    summary = load_or_build_summary(cfg, force=force_aggregate, logger=logger)
+    summary = load_or_build_summary(cfg, dataset=dataset,
+                                    force=force_aggregate, logger=logger)
 
     failures = []
     for feature in cfg.features.feature_names:

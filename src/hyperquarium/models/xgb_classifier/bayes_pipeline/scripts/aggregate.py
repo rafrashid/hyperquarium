@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--parquet", type=Path, required=True)
     ap.add_argument("--mapping", type=Path, required=True)
     ap.add_argument("--output", type=Path, default=Path("outputs/bayes"))
+    ap.add_argument("--labelset", type=str, default="reefcompare",
+                    help="Labelset to filter labelset_mapping.csv (default: reefcompare)")
     ap.add_argument("--glcm-window", type=int, default=None)
     ap.add_argument("--specdiv-plot", type=int, default=None)
     ap.add_argument("--force", action="store_true")
@@ -36,6 +38,7 @@ def main():
     cfg.paths.compiled_parquet = args.parquet
     cfg.paths.labelset_mapping = args.mapping
     cfg.paths.output_root = args.output
+    cfg.labels.labelset = args.labelset
     if args.glcm_window is not None:
         cfg.features.glcm_window = args.glcm_window
     if args.specdiv_plot is not None:
@@ -46,7 +49,7 @@ def main():
         logger.info("ROI summary already exists (use --force to rebuild): %s",
                     cfg.paths.roi_summary)
         return
-    aggregate_to_roi(cfg, logger=logger)
+    aggregate_to_roi(cfg, dataset=args.labelset, logger=logger)
 
 
 if __name__ == "__main__":
