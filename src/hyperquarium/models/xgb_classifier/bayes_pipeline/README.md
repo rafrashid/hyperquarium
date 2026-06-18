@@ -24,10 +24,10 @@ See the knowledge base note `bayesian-roi-feature-analysis` for the full rationa
    Cell-means (`0 + class`), independent per class (no pooling), no ROI random effect
    (handled by aggregation).
 3. **Contrast** (Step 4, posterior arithmetic, no refit):
-    - per-class sigma (baseline, every class)
-    - turf-referenced mu-distances
-    - turf-referenced sigma-ratios (from log-sigma differences)
-    - turf sigma vs each between-class gap
+   - per-class sigma (baseline, every class)
+   - turf-referenced mu-distances
+   - turf-referenced sigma-ratios (from log-sigma differences)
+   - turf sigma vs each between-class gap
 
 Every output table carries `n_roi` so each row self-documents how much data backs it.
 
@@ -43,6 +43,14 @@ r_hat / lower ess on their sigma params.
 ## Usage
 
 One dataset per invocation (pilot and reefcompare run separately).
+
+Run from **inside** `bayes_pipeline/`, with that directory on `PYTHONPATH` — same
+convention as `xgb_pipeline` (imports are prefix-free: `from config.config import ...`):
+
+```bash
+cd bayes_pipeline
+export PYTHONPATH="$PWD:$PYTHONPATH"
+```
 
 ```bash
 # 1. Aggregate (big-RAM; once per dataset). Submit pbs_aggregate.sh or run directly:

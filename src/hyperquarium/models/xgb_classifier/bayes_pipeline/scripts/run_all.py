@@ -17,8 +17,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bayes_pipeline.config.config import CONFIG
-from bayes_pipeline.run_bayes import run_all
+from config.config import CONFIG
+from run_bayes import run_all
 
 
 def main():

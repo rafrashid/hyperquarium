@@ -15,11 +15,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bayes_pipeline.config.config import CONFIG
-from bayes_pipeline.data.aggregate import load_or_build_summary
-from bayes_pipeline.models.fit import prepare_cell, prior_predictive
-from bayes_pipeline.run_bayes import run_one_cell
-from bayes_pipeline.utils.logger import get_logger
+from config.config import CONFIG
+from data.aggregate import load_or_build_summary
+from models.fit import prepare_cell, prior_predictive
+from run_bayes import run_one_cell
+from utils.logger import get_logger
 
 
 def main():

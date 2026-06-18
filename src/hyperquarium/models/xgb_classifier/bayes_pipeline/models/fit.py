@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from bayes_pipeline.config.config import Config
+from config.config import Config
 
 
 @dataclass
@@ -124,7 +124,7 @@ def fit_cell(cell: CellData, cfg: Config, logger=None):
     Fit one cell. Returns (model, idata). Tries nutpie if requested, falls back to
     PyMC's default NUTS if nutpie is unavailable.
     """
-    from bayes_pipeline.utils.logger import get_logger
+    from utils.logger import get_logger
     logger = logger or get_logger()
     s = cfg.sampler
 

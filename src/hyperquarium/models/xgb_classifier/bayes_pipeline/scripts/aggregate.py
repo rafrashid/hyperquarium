@@ -17,9 +17,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bayes_pipeline.config.config import CONFIG
-from bayes_pipeline.data.aggregate import aggregate_to_roi
-from bayes_pipeline.utils.logger import get_logger
+from config.config import CONFIG
+from data.aggregate import aggregate_to_roi
+from utils.logger import get_logger
 
 
 def main():

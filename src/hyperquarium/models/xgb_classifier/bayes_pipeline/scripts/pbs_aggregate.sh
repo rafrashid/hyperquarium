@@ -13,6 +13,8 @@ set -euo pipefail
 
 module load python/3.12        # adjust to your HPC module name
 
+# PYTHONPATH points INTO bayes_pipeline/ (same convention as xgb_pipeline).
+# Submit this job from the bayes_pipeline/ directory so PBS_O_WORKDIR is correct.
 export PYTHONPATH="${PBS_O_WORKDIR}:${PYTHONPATH:-}"
 cd "${PBS_O_WORKDIR}"
 

@@ -13,7 +13,7 @@ exposes the same `dataset=` parameter so the bayes pipeline behaves identically.
 from __future__ import annotations
 
 import pandas as pd
-from bayes_pipeline.config.config import LabelConfig
+from config.config import LabelConfig
 
 
 def load_mapping(path, cfg: LabelConfig, dataset: str | None = None) -> pd.DataFrame:

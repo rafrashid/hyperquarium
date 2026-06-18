@@ -12,13 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-from bayes_pipeline.analysis.contrasts import all_contrasts
-from bayes_pipeline.analysis.diagnostics import diagnostics_summary, diagnostics_table
-from bayes_pipeline.config.config import Config, CONFIG
-from bayes_pipeline.data.aggregate import load_or_build_summary
-from bayes_pipeline.models.fit import prepare_cell, fit_cell
-from bayes_pipeline.utils.io import save_table, save_json, save_idata, ensure_dir
-from bayes_pipeline.utils.logger import get_logger
+
+from analysis.contrasts import all_contrasts
+from analysis.diagnostics import diagnostics_summary, diagnostics_table
+from config.config import Config, CONFIG
+from data.aggregate import load_or_build_summary
+from models.fit import prepare_cell, fit_cell
+from utils.io import save_table, save_json, save_idata, ensure_dir
+from utils.logger import get_logger
 
 
 def _cell_dir(cfg: Config, feature: str, level: int) -> Path:

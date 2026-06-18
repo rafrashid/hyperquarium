@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from bayes_pipeline.models.fit import CellData
+from models.fit import CellData
 
 
 # --------------------------------------------------------------------------- #

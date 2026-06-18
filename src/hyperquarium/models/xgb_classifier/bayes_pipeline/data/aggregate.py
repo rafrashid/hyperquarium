@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from bayes_pipeline.config.config import Config
-from bayes_pipeline.data.labels import remap_labels
-from bayes_pipeline.utils.io import save_parquet
-from bayes_pipeline.utils.logger import get_logger
+from config.config import Config
+from data.labels import remap_labels
+from utils.io import save_parquet
+from utils.logger import get_logger
 
 
 def _resolve_feature_columns(df: pd.DataFrame, cfg: Config, logger) -> dict[str, str]:
