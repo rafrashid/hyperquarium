@@ -30,6 +30,8 @@ def main():
                     help="Labelset to filter labelset_mapping.csv (default: reefcompare)")
     ap.add_argument("--glcm-window", type=int, default=None)
     ap.add_argument("--specdiv-plot", type=int, default=None)
+    ap.add_argument("--include-gamma", action="store_true",
+                    help="Include gamma feature (parquet must have sdiv_gamma_plot_*).")
     ap.add_argument("--force-aggregate", action="store_true")
     args = ap.parse_args()
 
@@ -42,6 +44,8 @@ def main():
         cfg.features.glcm_window = args.glcm_window
     if args.specdiv_plot is not None:
         cfg.features.specdiv_plot = args.specdiv_plot
+    if args.include_gamma:
+        cfg.features.include_gamma = True
 
     run_all(cfg, dataset=args.labelset, force_aggregate=args.force_aggregate)
 

@@ -58,14 +58,20 @@ class FeatureConfig:
     independent knobs (they share the 7..203 scale but are conceptually different).
     Gamma uses the specdiv plot size.
     """
-    glcm_window: int = 25  # representative GLCM window size (7..203)
-    specdiv_plot: int = 25  # representative specdiv plot size (7..203)
+    glcm_window: int = 35  # representative GLCM window size (7..203)
+    specdiv_plot: int = 35  # representative specdiv plot size (7..203)
 
     glcm_metrics: tuple[str, ...] = ("energy", "entropy", "homogeneity", "contrast")
     # specdiv measure stems as they appear in compiled column names (post gamma-norm).
     # alpha_local / beta_local are the gamma-normalised stems; gamma is standalone.
     sdiv_local_measures: tuple[str, ...] = ("alpha_local", "beta_local")
     sdiv_gamma_measure: str = "gamma"
+    # Mirrors compile_features SPECDIV_INCLUDE_GAMMA: the gamma column
+    # (sdiv_gamma_plot_<size>) only exists if the parquet was compiled with gamma.
+    # Default False to match the current parquet (SPECDIV_INCLUDE_GAMMA = False).
+    # Set True once a gamma-inclusive parquet is compiled to restore the full
+    # 7-feature design.
+    include_gamma: bool = False
 
     def feature_columns(self) -> dict[str, str]:
         """
@@ -73,6 +79,7 @@ class FeatureConfig:
 
         Returns e.g. {"homogeneity": "homogeneity_window_25",
                       "alpha": "sdiv_alpha_local_plot_25", ...}
+        Gamma is included only if include_gamma is True (column must exist in parquet).
         """
         cols: dict[str, str] = {}
         for m in self.glcm_metrics:
@@ -80,13 +87,15 @@ class FeatureConfig:
         for m in self.sdiv_local_measures:
             short = m.split("_")[0]  # alpha_local -> alpha
             cols[short] = f"sdiv_{m}_plot_{self.specdiv_plot}"
-        cols[self.sdiv_gamma_measure] = f"sdiv_gamma_plot_{self.specdiv_plot}"
+        if self.include_gamma:
+            cols[self.sdiv_gamma_measure] = f"sdiv_gamma_plot_{self.specdiv_plot}"
         return cols
 
     @property
     def feature_names(self) -> list[str]:
-        """Short names, stable order: 3 specdiv then 4 GLCM."""
-        return ["gamma", "alpha", "beta", *self.glcm_metrics]
+        """Short names, stable order: specdiv (gamma if included) then 4 GLCM."""
+        specdiv = (["gamma"] if self.include_gamma else []) + ["alpha", "beta"]
+        return [*specdiv, *self.glcm_metrics]
 
 
 # --------------------------------------------------------------------------- #
