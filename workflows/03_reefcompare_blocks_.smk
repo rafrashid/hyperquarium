@@ -3,7 +3,7 @@ import gc
 from src.hyperquarium.data import my_utils, processing
 from src.hyperquarium.data.resampling import *
 
-selected_block = ['25x25', '11x11', '7x7', '3x3', '1x1']
+selected_block = ['11x11', '7x7', '3x3', '1x1']
 rc_roi_blocks = pd.read_csv("data/interim/03_reefcompare/03A_norm_refl-blocks.csv")
 rc_roi_blocks = rc_roi_blocks.loc[rc_roi_blocks['resampling_method'] == 'bilinear']
 rc_roi_blocks = rc_roi_blocks.loc[rc_roi_blocks['block_grid'].isin(selected_block)]
@@ -431,7 +431,7 @@ rule rc_spectral_PCA:
         loadings="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_loadings.nc"
     params:
         #keep_variance=0.99,
-        n_components=5,
+        n_components=3,
         band_start=7,# 421.3802 nm
         band_end=141  # 709.5606 nm
     run:
@@ -581,12 +581,12 @@ rule rc_PCA_var_contr:
         del loadings, scores
         gc.collect()
 
-rule rc_spect_diversity:
+rule rc_1x1_spect_diversity:
     input:
-        scores="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_block}_PCA_scores.nc",
+        scores="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_id}_bilinear-1x1_PCA_scores.nc",
     output:
-        csv_file="data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_block}_specdiv.csv",
-        output_dir=directory("data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_block}_specdiv")
+        csv_file="data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-1x1_specdiv.csv",
+        output_dir=directory("data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-1x1_specdiv")
     params:
         pc_vars=['PC1', 'PC2', 'PC3'],# Number of PCs to use in specdiv()
         kernel_sizes=[203, 143, 101, 71, 51, 35, 25, 17, 13, 9, 7],
@@ -617,6 +617,118 @@ rule rc_spect_diversity:
             rds.to_netcdf(f"{output.output_dir}/{name}.nc")
 
         del scores
+
+rule rc_3x3_spect_diversity:
+    input:
+        scores="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_id}_bilinear-3x3_PCA_scores.nc",
+    output:
+        csv_file="data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-3x3_specdiv.csv",
+        output_dir=directory("data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-3x3_specdiv")
+    params:
+        pc_vars=['PC1', 'PC2', 'PC3'],# Number of PCs to use in specdiv()
+        kernel_sizes=[33, 23, 17, 11],
+        prop_threshold=0.8,
+        n_iter=30,
+    run:
+        from src.hyperquarium.data.specdiv import specdiv_batch
+
+        scores = xr.open_dataset(input.scores,engine='netcdf4')
+
+        kernel_sizes = params.kernel_sizes
+        prop_threshold = params.prop_threshold
+        n_iter = params.n_iter
+        param_grid = []
+        for i, kernel_size in enumerate(kernel_sizes):
+            param = {"fact": kernel_size,
+                     "prop_threshold": prop_threshold,
+                     "n_iter": n_iter}
+            param_grid.append(param)
+
+        df, run_datasets = specdiv_batch(scores,param_grid,pc_vars=params.pc_vars)
+        Path(output.output_dir).mkdir(parents=True,exist_ok=True)
+        df.to_csv(output.csv_file,index=False)
+
+        for name, rds in run_datasets.items():
+            if rds.attrs.get("failed") == 1:
+                print(f"failed: {rds.attrs['error']}")
+            rds.to_netcdf(f"{output.output_dir}/{name}.nc")
+
+        del scores
+
+rule rc_7x7_spect_diversity:
+    input:
+        scores="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_id}_bilinear-7x7_PCA_scores.nc",
+    output:
+        csv_file="data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-7x7_specdiv.csv",
+        output_dir=directory("data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-7x7_specdiv")
+    params:
+        pc_vars=['PC1', 'PC2', 'PC3'],# Number of PCs to use in specdiv()
+        kernel_sizes=[15, 11, 7, 5],
+        prop_threshold=0.8,
+        n_iter=30,
+    run:
+        from src.hyperquarium.data.specdiv import specdiv_batch
+
+        scores = xr.open_dataset(input.scores,engine='netcdf4')
+
+        kernel_sizes = params.kernel_sizes
+        prop_threshold = params.prop_threshold
+        n_iter = params.n_iter
+        param_grid = []
+        for i, kernel_size in enumerate(kernel_sizes):
+            param = {"fact": kernel_size,
+                     "prop_threshold": prop_threshold,
+                     "n_iter": n_iter}
+            param_grid.append(param)
+
+        df, run_datasets = specdiv_batch(scores,param_grid,pc_vars=params.pc_vars)
+        Path(output.output_dir).mkdir(parents=True,exist_ok=True)
+        df.to_csv(output.csv_file,index=False)
+
+        for name, rds in run_datasets.items():
+            if rds.attrs.get("failed") == 1:
+                print(f"failed: {rds.attrs['error']}")
+            rds.to_netcdf(f"{output.output_dir}/{name}.nc")
+
+        del scores
+
+rule rc_11x11_spect_diversity:
+    input:
+        scores="data/interim/03_reefcompare/{spectrum_type}/04B_PCA/{label}/{roi_scan}/{roi_id}_bilinear-11x11_PCA_scores.nc",
+    output:
+        csv_file="data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-11x11_specdiv.csv",
+        output_dir=directory("data/interim/03_reefcompare/{spectrum_type}/04C_spec_diversity/{label}/{roi_scan}/{roi_id}_bilinear-11x11_specdiv")
+    params:
+        pc_vars=['PC1', 'PC2', 'PC3'],# Number of PCs to use in specdiv()
+        kernel_sizes=[9, 7, 5, 3],
+        prop_threshold=0.8,
+        n_iter=30,
+    run:
+        from src.hyperquarium.data.specdiv import specdiv_batch
+
+        scores = xr.open_dataset(input.scores,engine='netcdf4')
+
+        kernel_sizes = params.kernel_sizes
+        prop_threshold = params.prop_threshold
+        n_iter = params.n_iter
+        param_grid = []
+        for i, kernel_size in enumerate(kernel_sizes):
+            param = {"fact": kernel_size,
+                     "prop_threshold": prop_threshold,
+                     "n_iter": n_iter}
+            param_grid.append(param)
+
+        df, run_datasets = specdiv_batch(scores,param_grid,pc_vars=params.pc_vars)
+        Path(output.output_dir).mkdir(parents=True,exist_ok=True)
+        df.to_csv(output.csv_file,index=False)
+
+        for name, rds in run_datasets.items():
+            if rds.attrs.get("failed") == 1:
+                print(f"failed: {rds.attrs['error']}")
+            rds.to_netcdf(f"{output.output_dir}/{name}.nc")
+
+        del scores
+
 
 rule rc_spectdiv_plots:
     input:
@@ -690,9 +802,14 @@ rule reefcompare_blocks_extract:
         #        roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1", zip,
         #        label=RC_LABELS, roi_scan_ID=RC_SCANS, roi_ID=RC_ROIS),
         #     refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
-        expand("data/interim/03_reefcompare/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
-            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
-                label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_ID=RC_ROIS),
-            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        #        expand("data/interim/03_reefcompare/{refl_type}/04C_spec_diversity/{roi_path}_specdiv.png",
+        #            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}_bilinear-1x1",zip,
+        #                label=RC_LABELS,roi_scan_ID=RC_SCANS,roi_ID=RC_ROIS),
+        #            refl_type=['03A_norm_refl', '03B_L2_norm_refl']),
+        expand("data/interim/03_reefcompare/{refl_type}/04C_spec_diversity/{roi_path}_bilinear-{block_size}_specdiv.csv",
+            roi_path=expand("{label}/{roi_scan_ID}/{roi_ID}",zip,
+                label=MODEL_LABELS,roi_scan_ID=MODEL_SCANS,roi_ID=MODEL_ROIS),
+            refl_type=['03A_norm_refl', '03B_L2_norm_refl'],block_size=['1x1', '3x3', '7x7', '11x11']),
+
 
 ruleorder: rc_spectral_PCA > rc_spect_var_trio_distr > rc_spect_var_maps > rc_spect_var_trio > rc_plot_second_deriv > rc_second_deriv > rc_L2norm_refl
